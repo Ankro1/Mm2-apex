@@ -1010,9 +1010,28 @@ export type EspUpdateDependencies = {
 
 function Esp.updateWorldObjects(esp, dependencies)
 	local readOption = dependencies.ReadOption
-	if not readOption("EspOn", false) then return end
-	local map = dependencies.Round.Map and dependencies.Round.Map()
-	if not map then return end
+	if not readOption or not readOption("EspOn", false) then
+		return
+	end
+	if not dependencies.Round or not dependencies.Round.Map then
+		return
+	end
+	local map = dependencies.Round.Map()
+	if not map then
+		return
+	end
+	if not dependencies.CreateEntry or not dependencies.UpdateEntry then
+		return
+	end
+
+	local coinColor = Color3.fromRGB(255, 220, 50)
+	local trapColor = Color3.fromRGB(255, 100, 40)
+	pcall(function()
+		if esp.Color then
+			coinColor = esp.Color("Coin") or coinColor
+			trapColor = esp.Color("Trap") or trapColor
+		end
+	end)
 
 	if readOption("EspCoins", false) then
 		esp.CoinEntries = esp.CoinEntries or {}
@@ -1020,7 +1039,10 @@ function Esp.updateWorldObjects(esp, dependencies)
 		local seen = {}
 		if container then
 			for _, coin in ipairs(container:GetChildren()) do
-				local part = if coin:IsA("BasePart") then coin else coin:FindFirstChildWhichIsA("BasePart", true)
+				local part = coin
+				if not coin:IsA("BasePart") then
+					part = coin:FindFirstChildWhichIsA("BasePart", true)
+				end
 				if part then
 					seen[coin] = true
 					local entry = esp.CoinEntries[coin]
@@ -1028,15 +1050,21 @@ function Esp.updateWorldObjects(esp, dependencies)
 						entry = dependencies.CreateEntry("Coin_" .. tostring(coin))
 						esp.CoinEntries[coin] = entry
 					end
-					dependencies.UpdateEntry(entry, coin, part, esp.Color("Coin") or Color3.fromRGB(255, 220, 50), "Coin")
+					pcall(function()
+						dependencies.UpdateEntry(entry, coin, part, coinColor, "Coin")
+					end)
 				end
 			end
 		end
 		for coin, entry in pairs(esp.CoinEntries) do
-			if not seen[coin] then Esp.hide(entry) end
+			if not seen[coin] then
+				Esp.hide(entry)
+			end
 		end
 	elseif esp.CoinEntries then
-		for _, entry in pairs(esp.CoinEntries) do Esp.hide(entry) end
+		for _, entry in pairs(esp.CoinEntries) do
+			Esp.hide(entry)
+		end
 	end
 
 	if readOption("EspTraps", false) then
@@ -1044,26 +1072,38 @@ function Esp.updateWorldObjects(esp, dependencies)
 		local seen = {}
 		for _, desc in ipairs(map:GetDescendants()) do
 			local name = string.lower(tostring(desc.Name))
-			if (string.find(name, "trap") or string.find(name, "bear")) and (desc:IsA("BasePart") or desc:IsA("Model")) then
-				local part = if desc:IsA("BasePart") then desc else desc:FindFirstChildWhichIsA("BasePart", true)
-				if part then
-					seen[desc] = true
-					local entry = esp.TrapEntries[desc]
-					if not entry then
-						entry = dependencies.CreateEntry("Trap_" .. tostring(desc))
-						esp.TrapEntries[desc] = entry
+			if string.find(name, "trap", 1, true) or string.find(name, "bear", 1, true) then
+				if desc:IsA("BasePart") or desc:IsA("Model") then
+					local part = desc
+					if not desc:IsA("BasePart") then
+						part = desc:FindFirstChildWhichIsA("BasePart", true)
 					end
-					dependencies.UpdateEntry(entry, desc, part, esp.Color("Trap") or Color3.fromRGB(255, 100, 40), "Trap")
+					if part then
+						seen[desc] = true
+						local entry = esp.TrapEntries[desc]
+						if not entry then
+							entry = dependencies.CreateEntry("Trap_" .. tostring(desc))
+							esp.TrapEntries[desc] = entry
+						end
+						pcall(function()
+							dependencies.UpdateEntry(entry, desc, part, trapColor, "Trap")
+						end)
+					end
 				end
 			end
 		end
 		for obj, entry in pairs(esp.TrapEntries) do
-			if not seen[obj] then Esp.hide(entry) end
+			if not seen[obj] then
+				Esp.hide(entry)
+			end
 		end
 	elseif esp.TrapEntries then
-		for _, entry in pairs(esp.TrapEntries) do Esp.hide(entry) end
+		for _, entry in pairs(esp.TrapEntries) do
+			Esp.hide(entry)
+		end
 	end
 end
+
 
 function Esp.update(dependencies: EspUpdateDependencies)
 	local readOption, esp, round = dependencies.ReadOption, dependencies.Esp, dependencies.Round
@@ -1111,7 +1151,9 @@ function Esp.update(dependencies: EspUpdateDependencies)
 		dependencies.Hide(esp.GunEntry)
 	end
 
-	Esp.updateWorldObjects(esp, dependencies)
+	pcall(function()
+		Esp.updateWorldObjects(esp, dependencies)
+	end)
 end
 
 export type EspDependencies = {
@@ -1523,63 +1565,138 @@ export type CombatStepDependencies = {
 
 
 function Combat.flingTarget(combat, player, power)
-	power = power or 180
-	local character = player and player.Character
+	power = tonumber(power) or 180
+	if not player then
+		return false, "No target"
+	end
+	local character = player.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart")
-	if not root then return false, "No target" end
-	local localRoot = combat.LocalParts and combat.LocalParts()
+	if not root then
+		return false, "No target root"
+	end
+
+	local localRoot = nil
+	if combat.LocalParts then
+		localRoot = combat.LocalParts()
+	end
 	if not localRoot then
 		local lp = game:GetService("Players").LocalPlayer
 		localRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
 	end
-	if not localRoot then return false, "No local character" end
+	if not localRoot then
+		return false, "No local character"
+	end
+
+	if type(combat.Run) ~= "function" then
+		return false, "Combat runner missing"
+	end
 
 	return combat.Run(function()
-		local bv = Instance.new("BodyVelocity")
-		bv.MaxForce = Vector3.new(1e9, 1e9, 1e9)
-		local dir = (root.Position - localRoot.Position)
-		if dir.Magnitude < 0.1 then dir = Vector3.new(0, 1, 0) else dir = dir.Unit end
-		bv.Velocity = dir * power + Vector3.new(0, power * 0.85, 0)
-		bv.Parent = root
+		local saved = localRoot.CFrame
+		local humanoid = localRoot.Parent and localRoot.Parent:FindFirstChildOfClass("Humanoid")
+		local savedCollide = {}
 
+		for _, part in ipairs(localRoot.Parent:GetDescendants()) do
+			if part:IsA("BasePart") then
+				savedCollide[part] = part.CanCollide
+				part.CanCollide = false
+			end
+		end
+
+		-- build angular force on local root, then collide into target
 		local bav = Instance.new("BodyAngularVelocity")
+		bav.Name = "ApexFling"
 		bav.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
-		bav.AngularVelocity = Vector3.new(math.random(-50, 50), math.random(-50, 50), math.random(-50, 50))
-		bav.Parent = root
+		bav.AngularVelocity = Vector3.new(power, power, power)
+		bav.Parent = localRoot
 
-		task.wait(0.4)
-		bv:Destroy()
-		bav:Destroy()
+		local bv = Instance.new("BodyVelocity")
+		bv.Name = "ApexFlingV"
+		bv.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+		bv.Velocity = Vector3.new(0, power * 0.35, 0)
+		bv.Parent = localRoot
+
+		for _ = 1, 18 do
+			if not root.Parent or not localRoot.Parent then
+				break
+			end
+			localRoot.CFrame = root.CFrame
+			localRoot.AssemblyLinearVelocity = Vector3.new(math.random(-power, power), power, math.random(-power, power))
+			localRoot.AssemblyAngularVelocity = Vector3.new(power, power, power)
+			task.wait()
+		end
+
+		if bav.Parent then bav:Destroy() end
+		if bv.Parent then bv:Destroy() end
+
+		for part, can in pairs(savedCollide) do
+			if part.Parent then
+				part.CanCollide = can
+			end
+		end
+
+		if localRoot.Parent then
+			localRoot.CFrame = saved
+			localRoot.AssemblyLinearVelocity = Vector3.zero
+			localRoot.AssemblyAngularVelocity = Vector3.zero
+		end
 	end)
 end
 
+
 function Combat.hitboxExpand(combat, size)
-	size = size or 6
+	size = tonumber(size) or 6
+	if type(combat.Targets) ~= "function" then
+		return
+	end
 	for _, target in ipairs(combat.Targets()) do
-		local character = target.Player.Character
-		if not character then continue end
-		local root = character:FindFirstChild("HumanoidRootPart")
-		if root and root:IsA("BasePart") then
-			pcall(function()
-				root.Size = Vector3.new(size, size, size)
-				root.Transparency = 0.65
-				root.CanCollide = false
-			end)
+		local character = target.Player and target.Player.Character
+		if character then
+			local root = character:FindFirstChild("HumanoidRootPart")
+			if root and root:IsA("BasePart") then
+				pcall(function()
+					root.Size = Vector3.new(size, size, size)
+					root.Transparency = 0.65
+					root.CanCollide = false
+				end)
+			end
 		end
 	end
 end
 
+
 function Combat.triggerbotStep(combat, round, readOption, ready)
-	if not readOption("Triggerbot", false) then return end
-	if not ready("triggerbot", 0.12) then return end
+	if not readOption("Triggerbot", false) then
+		return
+	end
+	if not ready("triggerbot", 0.15) then
+		return
+	end
+	if not round.Tool then
+		return
+	end
 	local murderer = round.Murderer()
-	if not murderer then return end
+	if not murderer then
+		return
+	end
+	if type(combat.CharacterParts) ~= "function" or type(combat.LocalParts) ~= "function" then
+		return
+	end
 	local _, root = combat.CharacterParts(murderer)
 	local localRoot = combat.LocalParts()
-	if not root or not localRoot then return end
-	if (root.Position - localRoot.Position).Magnitude > 95 then return end
-	combat.ShootAt(murderer, false)
+	if not root or not localRoot then
+		return
+	end
+	if (root.Position - localRoot.Position).Magnitude > 95 then
+		return
+	end
+	if combat.ShootAt then
+		pcall(function()
+			combat.ShootAt(murderer, false)
+		end)
+	end
 end
+
 
 function Combat.step(dependencies: CombatStepDependencies)
 	local combat, round, quest = dependencies.Combat, dependencies.Round, dependencies.Quest
@@ -3309,12 +3426,23 @@ function Combat.create(dependencies: CombatDependencies): any
 	end
 	function combat.FlingMurderer(power)
 		local m = dependencies.Round.Murderer()
-		if not m then return false, "No murderer" end
+		if not m then
+			return false, "No murderer"
+		end
 		return combat.Fling(m, power)
+	end
+	function combat.FlingSheriff(power)
+		local s = dependencies.Round.Sheriff()
+		if not s then
+			return false, "No sheriff"
+		end
+		return combat.Fling(s, power)
 	end
 	function combat.FlingAll(power)
 		for _, t in ipairs(combat.Targets()) do
-			combat.Fling(t.Player, power or 180)
+			pcall(function()
+				combat.Fling(t.Player, power or 180)
+			end)
 			task.wait(0.12)
 		end
 		return true
@@ -4261,7 +4389,7 @@ function Movement.applyInvisibility(player, enabled)
 	for _, part in ipairs(character:GetDescendants()) do
 		if part:IsA("BasePart") or part:IsA("Decal") or part:IsA("Texture") then
 			pcall(function()
-				part.LocalTransparencyModifier = if enabled then 1 else 0
+				part.LocalTransparencyModifier = enabled and 1 or 0
 			end)
 		end
 	end
@@ -5116,15 +5244,20 @@ local function buildCombatInterface(tabs: any, controls: any, dependencies: Inte
 
 	section = tabs["Combat"]:Right("Fling & hitbox")
 	controls["Combat/Fling/Fling Murderer"] = section:CreateButton({
-		Callback = assert(dependencies.Callbacks["Fling Murderer"]),
+		Callback = (dependencies.Callbacks["Fling Murderer"] or function() end),
 		Title = "Fling Murderer",
 	})
+
+	controls["Combat/Fling/Fling Sheriff"] = section:CreateButton({
+		Callback = (dependencies.Callbacks["Fling Sheriff"] or function() end),
+		Title = "Fling Sheriff",
+	})
 	controls["Combat/Fling/Fling All"] = section:CreateButton({
-		Callback = assert(dependencies.Callbacks["Fling All"]),
+		Callback = (dependencies.Callbacks["Fling All"] or function() end),
 		Title = "Fling All",
 	})
 	controls["Combat/Fling/Fling Selected"] = section:CreateButton({
-		Callback = assert(dependencies.Callbacks["Fling Selected"]),
+		Callback = (dependencies.Callbacks["Fling Selected"] or function() end),
 		Title = "Fling Selected Player",
 	})
 	controls["FlingPower"] = section:CreateSlider("FlingPower", {
@@ -5436,7 +5569,7 @@ local function buildSettingsInterface(tabs: any, controls: any, dependencies: In
 	controls["UIAcrylic"] = section:CreateToggle("UIAcrylic", { Callback = assert(dependencies.Callbacks["UIAcrylic"]), Default = true, Title = "Acrylic blur" })
 	controls["MenuKeybind"] = section:CreateKeybind("MenuKeybind", { Default = "RightShift", Title = "Menu key" })
 	controls["PanicKey"] = section:CreateKeybind("PanicKey", {
-		Callback = assert(dependencies.Callbacks["Panic"]),
+		Callback = (dependencies.Callbacks["Panic"] or function() end),
 		Default = "P",
 		Mode = "Toggle",
 		Title = "Panic Key (Disable All)",
@@ -5480,50 +5613,63 @@ function Interface.combatCallbacks(dependencies: CombatInterfaceDependencies): {
 		end,
 		["Fling Murderer"] = function()
 			dependencies.Spawn(function()
-				local ok, err = combat.FlingMurderer and combat.FlingMurderer(180)
-				if combat.FlingMurderer then
-					dependencies.ShowResult(ok, err or "Fling failed")
-				else
+				if not combat.FlingMurderer then
 					dependencies.ShowMessage("Fling not available")
+					return
 				end
+				local ok, err = combat.FlingMurderer(180)
+				dependencies.ShowResult(ok, err or "Fling failed", "Fling sent")
+			end)
+		end,
+		["Fling Sheriff"] = function()
+			dependencies.Spawn(function()
+				local sheriff = round.Sheriff()
+				if not sheriff then
+					dependencies.ShowMessage("No sheriff found")
+					return
+				end
+				if not combat.Fling then
+					dependencies.ShowMessage("Fling not available")
+					return
+				end
+				local ok, err = combat.Fling(sheriff, 180)
+				dependencies.ShowResult(ok, err or "Fling failed", "Fling sent")
 			end)
 		end,
 		["Fling All"] = function()
 			dependencies.Spawn(function()
-				if combat.FlingAll then
-					combat.FlingAll(180)
-					dependencies.ShowMessage("Fling all sent")
-				else
+				if not combat.FlingAll then
 					dependencies.ShowMessage("Fling not available")
+					return
 				end
+				combat.FlingAll(180)
+				dependencies.ShowMessage("Fling all sent")
 			end)
 		end,
 		["Fling Selected"] = function()
 			dependencies.Spawn(function()
-				local name = nil
-				if dependencies.ReadOption then
-					name = dependencies.ReadOption("_TpPlayer", nil)
-				end
+				local name = dependencies.ReadOption and dependencies.ReadOption("_TpPlayer", nil)
 				if not name then
 					dependencies.ShowMessage("Select a player in Movement > Teleport first")
 					return
 				end
-				local players = game:GetService("Players")
-				local target = players:FindFirstChild(name)
+				local target = game:GetService("Players"):FindFirstChild(tostring(name))
 				if not target then
 					dependencies.ShowMessage("Player not found")
 					return
 				end
-				if combat.Fling then
-					local ok, err = combat.Fling(target, 180)
-					dependencies.ShowResult(ok, err or "Fling failed")
-				else
+				if not combat.Fling then
 					dependencies.ShowMessage("Fling not available")
+					return
 				end
+				local ok, err = combat.Fling(target, 180)
+				dependencies.ShowResult(ok, err or "Fling failed", "Fling sent")
 			end)
 		end,
 		["Panic"] = function()
-			if dependencies.Panic then dependencies.Panic() end
+			if dependencies.Panic then
+				dependencies.Panic()
+			end
 		end,
 	}
 end
@@ -6439,17 +6585,21 @@ function Application.start(host: any, uiSource: string?, loadLibrary: ((any) -> 
 		})
 	end)
 
-	-- Runtime extras: godmode / invis / antifling / evade / hitbox
+		-- Runtime extras: godmode / invis / antifling / evade / hitbox
 	task.spawn(function()
+		local wasInvisible = false
 		while isRunning() do
-			local ok, err = pcall(function()
+			pcall(function()
 				if readOption("Godmode", false) then
 					Movement.applyGodmode(player, true)
 				end
-				if readOption("Invisibility", false) then
+				local wantInvis = readOption("Invisibility", false)
+				if wantInvis then
 					Movement.applyInvisibility(player, true)
-				elseif player.Character then
+					wasInvisible = true
+				elseif wasInvisible then
 					Movement.applyInvisibility(player, false)
+					wasInvisible = false
 				end
 				if readOption("AntiFling", false) then
 					Movement.antiFlingTick(player)
@@ -6461,7 +6611,7 @@ function Application.start(host: any, uiSource: string?, loadLibrary: ((any) -> 
 						Round = gameState.Round,
 						Player = player,
 					})
-					if readOption("HitboxExpand", false) then
+					if readOption("HitboxExpand", false) and controllers.Combat.HitboxExpand then
 						controllers.Combat.HitboxExpand(readNumber("HitboxSize", 6))
 					end
 				end
