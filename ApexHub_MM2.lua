@@ -4955,19 +4955,24 @@ export type InterfaceDependencies = {
 local function buildOverviewInterface(tabs: any, controls: any, dependencies: InterfaceDependencies)
 	local section
 
-	section = tabs["Overview"]:Left("This Session")
-	controls["_CoinsCard"] = section:CreateStat("_CoinsCard", { Icon = "coins", Title = "Coins collected", Value = "0" })
-	controls["_CandyCard"] = section:CreateStat("_CandyCard", { Icon = "ghost", Title = "Event candy", Value = "..." })
-	controls["_RoundsCard"] = section:CreateStat("_RoundsCard", { Icon = "repeat", Title = "Rounds played", Value = "0" })
+	section = tabs["Overview"]:Left("Session")
+	controls["_CoinsCard"] = section:CreateStat("_CoinsCard", { Icon = "coins", Title = "Coins", Value = "0" })
+	controls["_CandyCard"] = section:CreateStat("_CandyCard", { Icon = "candy", Title = "Candy", Value = "..." })
+	controls["_RoundsCard"] = section:CreateStat("_RoundsCard", { Icon = "repeat", Title = "Rounds", Value = "0" })
 	controls["_KillsCard"] = section:CreateStat("_KillsCard", { Icon = "swords", Title = "Kills", Value = "0" })
-
-	section = tabs["Overview"]:Right("Round")
-	controls["Overview/Round/Current round"] = section:CreateParagraph({ Content = "Loading...", Title = "Current round" })
-	controls["Overview/Round/Coin farm"] = section:CreateParagraph({ Content = "Off", Title = "Coin farm" })
-	controls["Overview/Round/Find any setting"] = section:CreateCallout({
-		Content = "Use the search bar at the top. Hover controls for extra help.",
+	controls["Overview/Session/Welcome"] = section:CreateCallout({
+		Content = "Apex Hub is ready. Farm, combat, visuals and movement live in the side tabs. Use search at the top to jump to any setting.",
 		Style = "Info",
-		Title = "Find any setting",
+		Title = "Welcome",
+	})
+
+	section = tabs["Overview"]:Right("Live status")
+	controls["Overview/Round/Current round"] = section:CreateParagraph({ Content = "Loading...", Title = "Round" })
+	controls["Overview/Round/Coin farm"] = section:CreateParagraph({ Content = "Off", Title = "Coin farm" })
+	controls["Overview/Round/Quick actions"] = section:CreateCallout({
+		Content = "Jump straight into the tools you use most.",
+		Style = "Info",
+		Title = "Quick actions",
 	})
 	controls["Overview/Round/Open Coin Farm"] = section:CreateButton({ Callback = assert(dependencies.Callbacks["Open Coin Farm"]), Title = "Open Coin Farm" })
 	controls["Overview/Round/Open Combat"] = section:CreateButton({ Callback = assert(dependencies.Callbacks["Open Combat"]), Title = "Open Combat" })
@@ -5024,7 +5029,7 @@ local function buildCoinFarmInterface(tabs: any, controls: any, dependencies: In
 		Title = "Skip Upper Floor Coins",
 	})
 	controls["Coin Farm/Safety/How it works"] = section:CreateCallout({
-		Content = "You wait under the floor below each coin and grab it from there, so nobody can reach you. Turning the farm off brings you back up next to the last coin.",
+		Content = "Stays under the map, collects from below, then surfaces when you turn it off. Safer than walking on top of the map.",
 		Style = "Info",
 		Title = "How it works",
 	})
@@ -5033,7 +5038,7 @@ end
 local function buildCombatInterface(tabs: any, controls: any, dependencies: InterfaceDependencies)
 	local section
 
-	section = tabs["Combat"]:Left("Murderer")
+	section = tabs["Combat"]:Left("Murderer tools")
 	controls["Combat/Murderer/Round"] = section:CreateParagraph({ Content = "Loading...", Title = "Round" })
 	controls["Combat/Murderer/Kill Everyone"] = section:CreateButton({
 		Callback = assert(dependencies.Callbacks["Kill Everyone"]),
@@ -5061,7 +5066,7 @@ local function buildCombatInterface(tabs: any, controls: any, dependencies: Inte
 	controls["KnifeSilentAim"] = section:CreateToggle("KnifeSilentAim", { Default = false, Description = "Your knife throws go to the target", Title = "Knife Silent Aim" })
 	controls["KnifeAimSheriff"] = section:CreateToggle("KnifeAimSheriff", { Default = true, Title = "Aim At Sheriff First" })
 
-	section = tabs["Combat"]:Right("Sheriff")
+	section = tabs["Combat"]:Right("Sheriff tools")
 	controls["Combat/Sheriff/Shoot Murderer"] = section:CreateButton({ Callback = assert(dependencies.Callbacks["Shoot Murderer"]), Title = "Shoot Murderer" })
 	controls["AutoShoot"] = section:CreateToggle("AutoShoot", {
 		Default = false,
@@ -5092,7 +5097,7 @@ local function buildCombatInterface(tabs: any, controls: any, dependencies: Inte
 		Title = "Shot Prediction",
 	})
 
-	section = tabs["Combat"]:Right("Dropped Gun")
+	section = tabs["Combat"]:Right("Gun pickup")
 	controls["Combat/Dropped Gun/Grab Gun"] = section:CreateButton({ Callback = assert(dependencies.Callbacks["Grab Gun"]), Title = "Grab Gun" })
 	controls["AutoGrabGun"] = section:CreateToggle("AutoGrabGun", { Default = false, Description = "Picks up the gun when the sheriff dies", Title = "Auto Grab Gun" })
 	controls["GrabSafeRadius"] = section:CreateSlider("GrabSafeRadius", {
@@ -5103,12 +5108,54 @@ local function buildCombatInterface(tabs: any, controls: any, dependencies: Inte
 		Rounding = 0,
 		Title = "Grab Safe Radius",
 	})
+	controls["AutoReturnGun"] = section:CreateToggle("AutoReturnGun", {
+		Default = false,
+		Description = "Returns to a safe spot after grabbing the gun",
+		Title = "Auto Return After Grab",
+	})
+
+	section = tabs["Combat"]:Right("Fling & hitbox")
+	controls["Combat/Fling/Fling Murderer"] = section:CreateButton({
+		Callback = assert(dependencies.Callbacks["Fling Murderer"]),
+		Title = "Fling Murderer",
+	})
+	controls["Combat/Fling/Fling All"] = section:CreateButton({
+		Callback = assert(dependencies.Callbacks["Fling All"]),
+		Title = "Fling All",
+	})
+	controls["Combat/Fling/Fling Selected"] = section:CreateButton({
+		Callback = assert(dependencies.Callbacks["Fling Selected"]),
+		Title = "Fling Selected Player",
+	})
+	controls["FlingPower"] = section:CreateSlider("FlingPower", {
+		Default = 180,
+		Max = 400,
+		Min = 80,
+		Rounding = 0,
+		Title = "Fling Power",
+	})
+	controls["HitboxExpand"] = section:CreateToggle("HitboxExpand", {
+		Default = false,
+		Title = "Hitbox Expander",
+	})
+	controls["HitboxSize"] = section:CreateSlider("HitboxSize", {
+		Default = 6,
+		Max = 15,
+		Min = 2,
+		Rounding = 0,
+		Title = "Hitbox Size",
+	})
+	controls["Triggerbot"] = section:CreateToggle("Triggerbot", {
+		Default = false,
+		Description = "Fires as soon as the murderer is on screen",
+		Title = "Triggerbot",
+	})
 end
 
 local function buildVisualsInterface(tabs: any, controls: any, dependencies: InterfaceDependencies)
 	local section
 
-	section = tabs["Visuals"]:Left("Player ESP")
+	section = tabs["Visuals"]:Left("Players")
 	controls["EspOn"] = section:CreateToggle("EspOn", { Default = false, Title = "Player ESP" })
 	controls["EspRoles"] = section:CreateDropdown("EspRoles", {
 		Default = { "Murderer", "Sheriff", "Hero", "Innocent" },
@@ -5129,8 +5176,19 @@ local function buildVisualsInterface(tabs: any, controls: any, dependencies: Int
 		Title = "Highlight Fill",
 	})
 	controls["EspGun"] = section:CreateToggle("EspGun", { Default = true, Title = "Dropped Gun ESP" })
+	controls["EspTracers"] = section:CreateToggle("EspTracers", { Default = false, Title = "Tracers" })
+	controls["MurdererTracerStrong"] = section:CreateToggle("MurdererTracerStrong", {
+		Default = true,
+		Title = "Strong Murderer Tracer",
+	})
+	controls["EspCoins"] = section:CreateToggle("EspCoins", { Default = false, Title = "Coin ESP" })
+	controls["EspTraps"] = section:CreateToggle("EspTraps", {
+		Default = false,
+		Description = "Best-effort map traps",
+		Title = "Trap ESP",
+	})
 
-	section = tabs["Visuals"]:Right("Colors")
+	section = tabs["Visuals"]:Right("Role colors")
 	controls["ColorMurderer"] = section:CreateColorpicker("ColorMurderer", { Default = dependencies.NewColor3(1, 0.23529411852359772, 0.23529411852359772), Title = "Murderer" })
 	controls["ColorSheriff"] = section:CreateColorpicker("ColorSheriff", { Default = dependencies.NewColor3(0.23529411852359772, 0.5490196347236633, 1), Title = "Sheriff" })
 	controls["ColorHero"] = section:CreateColorpicker("ColorHero", { Default = dependencies.NewColor3(1, 0.8039215803146362, 0.23529411852359772), Title = "Hero And Gun" })
@@ -5143,7 +5201,7 @@ local function buildVisualsInterface(tabs: any, controls: any, dependencies: Int
 	controls["AnnounceRoles"] = section:CreateToggle("AnnounceRoles", { Default = true, Title = "Show Roles At Round Start" })
 	controls["AnnounceGun"] = section:CreateToggle("AnnounceGun", { Default = true, Title = "Alert When Gun Drops" })
 
-	section = tabs["Visuals"]:Right("World")
+	section = tabs["Visuals"]:Right("World & light")
 	controls["Fullbright"] = section:CreateToggle("Fullbright", {
 		Callback = assert(dependencies.Callbacks["Fullbright"]),
 		Default = false,
@@ -5155,14 +5213,35 @@ end
 local function buildMovementInterface(tabs: any, controls: any, dependencies: InterfaceDependencies)
 	local section
 
-	section = tabs["Movement"]:Left("Character")
+	section = tabs["Movement"]:Left("Speed & jump")
 	controls["SpeedOn"] = section:CreateToggle("SpeedOn", { Default = false, Title = "Custom Walk Speed" })
 	controls["SpeedValue"] = section:CreateSlider("SpeedValue", { Default = 24, Max = 100, Min = 16, Rounding = 0, Title = "Walk Speed" })
 	controls["JumpOn"] = section:CreateToggle("JumpOn", { Default = false, Title = "Custom Jump Power" })
 	controls["JumpValue"] = section:CreateSlider("JumpValue", { Default = 70, Max = 200, Min = 50, Rounding = 0, Title = "Jump Power" })
 	controls["InfJump"] = section:CreateToggle("InfJump", { Default = false, Title = "Infinite Jump" })
 
-	section = tabs["Movement"]:Left("Fly And Noclip")
+	section = tabs["Movement"]:Left("Protection")
+	controls["Godmode"] = section:CreateToggle("Godmode", {
+		Default = false,
+		Description = "Client health lock (mitigation, not absolute)",
+		Title = "Godmode / Anti-Kill",
+	})
+	controls["AntiFling"] = section:CreateToggle("AntiFling", { Default = false, Title = "Anti-Fling" })
+	controls["Invisibility"] = section:CreateToggle("Invisibility", {
+		Default = false,
+		Description = "Client-side only",
+		Title = "Invisibility",
+	})
+	controls["AutoEvade"] = section:CreateToggle("AutoEvade", { Default = false, Title = "Auto Evade Murderer" })
+	controls["EvadeRadius"] = section:CreateSlider("EvadeRadius", {
+		Default = 18,
+		Max = 40,
+		Min = 8,
+		Rounding = 0,
+		Title = "Evade Radius",
+	})
+
+	section = tabs["Movement"]:Left("Fly & noclip")
 	controls["Fly"] = section:CreateToggle("Fly", {
 		Default = false,
 		Description = "Move with your normal controls, Space or E to go up, Q to go down",
@@ -5180,7 +5259,7 @@ local function buildMovementInterface(tabs: any, controls: any, dependencies: In
 	controls["ClickTp"] = section:CreateToggle("ClickTp", { Default = false, Description = "Hold the key below and click to teleport", Title = "Click Teleport" })
 	controls["ClickTpKey"] = section:CreateKeybind("ClickTpKey", { Default = "LeftAlt", Mode = "Hold", Title = "Click Teleport Key" })
 
-	section = tabs["Movement"]:Right("Teleport")
+	section = tabs["Movement"]:Right("Teleports")
 	controls["Movement/Teleport/To Lobby"] = section:CreateButton({ Callback = assert(dependencies.Callbacks["To Lobby"]), Title = "To Lobby" })
 	controls["Movement/Teleport/To Map"] = section:CreateButton({ Callback = assert(dependencies.Callbacks["To Map"]), Title = "To Map" })
 	controls["Movement/Teleport/To Murderer"] = section:CreateButton({ Callback = assert(dependencies.Callbacks["To Murderer"]), Title = "To Murderer" })
@@ -5354,8 +5433,8 @@ local function buildSettingsInterface(tabs: any, controls: any, dependencies: In
 		Title = "Theme",
 		Values = library.Themes,
 	})
-	controls["UIAcrylic"] = section:CreateToggle("UIAcrylic", { Callback = assert(dependencies.Callbacks["UIAcrylic"]), Default = true, Title = "Background Blur" })
-	controls["MenuKeybind"] = section:CreateKeybind("MenuKeybind", { Default = "RightShift", Title = "Show Or Hide Interface" })
+	controls["UIAcrylic"] = section:CreateToggle("UIAcrylic", { Callback = assert(dependencies.Callbacks["UIAcrylic"]), Default = true, Title = "Acrylic blur" })
+	controls["MenuKeybind"] = section:CreateKeybind("MenuKeybind", { Default = "RightShift", Title = "Menu key" })
 	controls["PanicKey"] = section:CreateKeybind("PanicKey", {
 		Callback = assert(dependencies.Callbacks["Panic"]),
 		Default = "P",
@@ -5420,7 +5499,28 @@ function Interface.combatCallbacks(dependencies: CombatInterfaceDependencies): {
 			end)
 		end,
 		["Fling Selected"] = function()
-			dependencies.ShowMessage("Select a player from Teleport dropdown then use Fling Selected")
+			dependencies.Spawn(function()
+				local name = nil
+				if dependencies.ReadOption then
+					name = dependencies.ReadOption("_TpPlayer", nil)
+				end
+				if not name then
+					dependencies.ShowMessage("Select a player in Movement > Teleport first")
+					return
+				end
+				local players = game:GetService("Players")
+				local target = players:FindFirstChild(name)
+				if not target then
+					dependencies.ShowMessage("Player not found")
+					return
+				end
+				if combat.Fling then
+					local ok, err = combat.Fling(target, 180)
+					dependencies.ShowResult(ok, err or "Fling failed")
+				else
+					dependencies.ShowMessage("Fling not available")
+				end
+			end)
 		end,
 		["Panic"] = function()
 			if dependencies.Panic then dependencies.Panic() end
@@ -5778,7 +5878,12 @@ function Interface.simpleCallbacks(dependencies: SimpleInterfaceDependencies): {
 		Theme = function(theme: any) dependencies.Library:SetTheme(theme) end,
 		UIAcrylic = function(enabled: any) Appearance.setBackgroundBlur(dependencies.Library, enabled) end,
 		["Unload Hub"] = dependencies.Unload,
-		["Panic"] = function() end,
+		["Panic"] = function()
+			Lifecycle.panic({
+				Options = dependencies.Options or (dependencies.Library and dependencies.Library.Options),
+				Notify = function(m) Interface.notify(dependencies.Library, m) end,
+			})
+		end,
 	}
 end
 
@@ -5899,30 +6004,30 @@ function Interface.create(dependencies: InterfaceDependencies): any
 	local controls = {}
 	local window = library:CreateWindow({
 		Acrylic = true,
-		MinSize = dependencies.NewVector2(700, 480),
+		MinSize = dependencies.NewVector2(760, 520),
 		MinimizeKey = dependencies.MenuKey,
 		Resize = true,
-		Size = dependencies.NewUDim2(0, 1040, 0, 720),
+		Size = dependencies.NewUDim2(0, 1080, 0, 740),
 		StatusBar = true,
-		SubTitle = "Murder Mystery 2",
-		TabWidth = 160,
+		SubTitle = "MM2  ·  Apex",
+		TabWidth = 168,
 		Theme = "Cobalt",
 		Title = "Apex Hub",
 		ToggleButton = true,
 	})
 	if dependencies.OnWindow then dependencies.OnWindow(window) end
-	window:Divider("Dashboard")
+	window:Divider("HOME")
 	tabs["Overview"] = window:CreateTab({ Icon = "layout-dashboard", Title = "Overview" })
-	window:Divider("Gameplay")
+	window:Divider("GAME")
 	tabs["Coin Farm"] = window:CreateTab({ Icon = "coins", Title = "Coin Farm" })
 	tabs["Combat"] = window:CreateTab({ Icon = "swords", Title = "Combat" })
 	tabs["Visuals"] = window:CreateTab({ Icon = "eye", Title = "Visuals" })
 	tabs["Movement"] = window:CreateTab({ Icon = "move", Title = "Movement" })
-	window:Divider("Activities")
+	window:Divider("EVENT")
 	tabs["Event"] = window:CreateTab({ Icon = "ghost", Title = "Event" })
-	window:Divider("Utility & Settings")
-	tabs["Notifications"] = window:CreateTab({ Icon = "send", Title = "Notifications" })
-	tabs["Misc"] = window:CreateTab({ Icon = "gauge", Title = "Misc" })
+	window:Divider("SYSTEM")
+	tabs["Notifications"] = window:CreateTab({ Icon = "bell", Title = "Notifications" })
+	tabs["Misc"] = window:CreateTab({ Icon = "wrench", Title = "Misc" })
 	tabs["Settings"] = window:CreateTab({ Icon = "settings", Title = "Settings" })
 
 	local layoutTabs = tabs
@@ -5992,6 +6097,17 @@ function Application.createInterface(dependencies: any): any
 		Interface.combatCallbacks({
 			Round = dependencies.Round, Combat = dependencies.Combat, Spawn = dependencies.Spawn,
 			ShowMessage = notify, ShowResult = showResult,
+			ReadOption = dependencies.ReadOption,
+			Panic = function()
+				Lifecycle.panic({
+					Options = dependencies.Options,
+					Mover = dependencies.Mover,
+					Farm = dependencies.Farm,
+					Movement = dependencies.Movement,
+					Player = dependencies.Player,
+					Notify = notify,
+				})
+			end,
 		}),
 		Interface.teleportCallbacks({
 			Round = dependencies.Round, Lobby = dependencies.Locations.LobbySpawn, Map = dependencies.Locations.SpawnPoint,
@@ -6247,7 +6363,7 @@ function Application.start(host: any, uiSource: string?, loadLibrary: ((any) -> 
 		interface = Application.createInterface({
 			Library = library, Options = options, State = state, Player = player, Players = players,
 			ReadOption = readOption, Input = input, Movement = controllers.Movement, Round = gameState.Round,
-			Combat = controllers.Combat, Mover = automation.Mover, Event = gameState.Event, Visuals = visual.Visuals,
+			Combat = controllers.Combat, Mover = automation.Mover, Farm = automation.Farm, Event = gameState.Event, Visuals = visual.Visuals,
 			Settings = visual.Settings, Support = support, Locations = automation.Locations,
 			Spawn = environment.task.spawn, Protect = protect, Http = http, IsFolder = environment.isfolder,
 			MakeFolder = environment.makefolder, IsFile = environment.isfile, ReadFile = environment.readfile,
@@ -6295,7 +6411,7 @@ function Application.start(host: any, uiSource: string?, loadLibrary: ((any) -> 
 		Event = gameState.Event, Config = support.Config, Farm = automation.Farm, Webhook = support.Webhook,
 		Popups = support.Popups, World = visual.Visuals,
 	}, environment.os.date)
-	library:SetTheme("Cobalt")
+	pcall(function() library:SetTheme("Cobalt") end)
 	interface.Window:SelectTab(1)
 
 	-- Panic helper
@@ -6354,7 +6470,7 @@ function Application.start(host: any, uiSource: string?, loadLibrary: ((any) -> 
 		end
 	end)
 
-	Interface.notify(library, "Apex Hub loaded | Murder Mystery 2")
+	Interface.notify(library, "Apex Hub ready  ·  MM2")
 	return diagnostics
 end
 
@@ -6374,65 +6490,100 @@ function Mobile.create(dependencies)
 	screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	screen.IgnoreGuiInset = true
 	pcall(function()
-		if gethui then screen.Parent = gethui() else screen.Parent = playerGui end
+		if gethui then
+			screen.Parent = gethui()
+		else
+			screen.Parent = playerGui
+		end
 	end)
-	if not screen.Parent then screen.Parent = playerGui end
+	if not screen.Parent then
+		screen.Parent = playerGui
+	end
 
-	local frame = Instance.new("Frame")
-	frame.Name = "Panel"
-	frame.Size = UDim2.new(0, 210, 0, 360)
-	frame.Position = UDim2.new(1, -230, 0.5, -180)
-	frame.BackgroundColor3 = Color3.fromRGB(16, 16, 22)
-	frame.BackgroundTransparency = 0.12
-	frame.BorderSizePixel = 0
-	frame.Active = true
-	frame.Parent = screen
+	local root = Instance.new("Frame")
+	root.Name = "Root"
+	root.Size = UDim2.fromOffset(228, 0)
+	root.AutomaticSize = Enum.AutomaticSize.Y
+	root.Position = UDim2.new(1, -244, 0.5, -190)
+	root.BackgroundColor3 = Color3.fromRGB(12, 14, 20)
+	root.BackgroundTransparency = 0.08
+	root.BorderSizePixel = 0
+	root.Active = true
+	root.Parent = screen
 
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 14)
-	corner.Parent = frame
+	local rootCorner = Instance.new("UICorner")
+	rootCorner.CornerRadius = UDim.new(0, 16)
+	rootCorner.Parent = root
 
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = Color3.fromRGB(60, 70, 100)
-	stroke.Thickness = 1
-	stroke.Parent = frame
+	local rootStroke = Instance.new("UIStroke")
+	rootStroke.Color = Color3.fromRGB(80, 120, 220)
+	rootStroke.Thickness = 1.2
+	rootStroke.Transparency = 0.35
+	rootStroke.Parent = root
 
-	local title = Instance.new("TextLabel")
-	title.Size = UDim2.new(1, -20, 0, 40)
-	title.Position = UDim2.new(0, 10, 0, 6)
-	title.BackgroundTransparency = 1
-	title.Text = "Apex Mobile"
-	title.TextColor3 = Color3.fromRGB(230, 232, 245)
-	title.Font = Enum.Font.GothamBold
-	title.TextSize = 18
-	title.TextXAlignment = Enum.TextXAlignment.Left
-	title.Parent = frame
+	local rootPad = Instance.new("UIPadding")
+	rootPad.PaddingTop = UDim.new(0, 12)
+	rootPad.PaddingBottom = UDim.new(0, 12)
+	rootPad.PaddingLeft = UDim.new(0, 12)
+	rootPad.PaddingRight = UDim.new(0, 12)
+	rootPad.Parent = root
 
 	local list = Instance.new("UIListLayout")
 	list.Padding = UDim.new(0, 8)
 	list.SortOrder = Enum.SortOrder.LayoutOrder
-	list.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	list.Parent = frame
+	list.Parent = root
 
-	local pad = Instance.new("UIPadding")
-	pad.PaddingTop = UDim.new(0, 48)
-	pad.PaddingBottom = UDim.new(0, 12)
-	pad.Parent = frame
+	local header = Instance.new("Frame")
+	header.BackgroundTransparency = 1
+	header.Size = UDim2.new(1, 0, 0, 36)
+	header.LayoutOrder = 0
+	header.Parent = root
+
+	local title = Instance.new("TextLabel")
+	title.BackgroundTransparency = 1
+	title.Size = UDim2.new(1, -28, 1, 0)
+	title.Font = Enum.Font.GothamBold
+	title.Text = "APEX"
+	title.TextSize = 20
+	title.TextColor3 = Color3.fromRGB(235, 240, 255)
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Parent = header
+
+	local badge = Instance.new("TextLabel")
+	badge.BackgroundColor3 = Color3.fromRGB(40, 90, 200)
+	badge.Size = UDim2.fromOffset(44, 20)
+	badge.Position = UDim2.new(1, -44, 0.5, -10)
+	badge.Font = Enum.Font.GothamBold
+	badge.Text = "MM2"
+	badge.TextSize = 11
+	badge.TextColor3 = Color3.fromRGB(255, 255, 255)
+	badge.Parent = header
+	local badgeCorner = Instance.new("UICorner")
+	badgeCorner.CornerRadius = UDim.new(0, 6)
+	badgeCorner.Parent = badge
 
 	local function makeButton(text, order, color, callback)
 		local btn = Instance.new("TextButton")
-		btn.Size = UDim2.new(1, -20, 0, 44)
-		btn.BackgroundColor3 = color or Color3.fromRGB(38, 42, 58)
-		btn.Text = text
-		btn.TextColor3 = Color3.fromRGB(240, 242, 255)
-		btn.Font = Enum.Font.GothamMedium
-		btn.TextSize = 15
-		btn.LayoutOrder = order
+		btn.Size = UDim2.new(1, 0, 0, 46)
+		btn.BackgroundColor3 = color
 		btn.AutoButtonColor = true
-		btn.Parent = frame
+		btn.Font = Enum.Font.GothamMedium
+		btn.Text = text
+		btn.TextSize = 15
+		btn.TextColor3 = Color3.fromRGB(245, 247, 255)
+		btn.LayoutOrder = order
+		btn.Parent = root
+
 		local c = Instance.new("UICorner")
-		c.CornerRadius = UDim.new(0, 10)
+		c.CornerRadius = UDim.new(0, 12)
 		c.Parent = btn
+
+		local s = Instance.new("UIStroke")
+		s.Color = Color3.fromRGB(255, 255, 255)
+		s.Transparency = 0.88
+		s.Thickness = 1
+		s.Parent = btn
+
 		local function fire()
 			pcall(callback)
 		end
@@ -6442,49 +6593,61 @@ function Mobile.create(dependencies)
 	end
 
 	local function toggle(name)
-		local opt = dependencies.Options[name]
+		local opt = dependencies.Options and dependencies.Options[name]
 		if opt and opt.SetValue then
-			pcall(function() opt:SetValue(not opt.Value) end)
+			pcall(function()
+				opt:SetValue(not opt.Value)
+			end)
 		end
 	end
 
-	makeButton("Toggle Farm", 1, Color3.fromRGB(40, 70, 50), function() toggle("AutoCoins") end)
-	makeButton("Toggle ESP", 2, Color3.fromRGB(40, 55, 80), function() toggle("EspOn") end)
-	makeButton("Fling Murderer", 3, Color3.fromRGB(90, 40, 40), function()
+	makeButton("Farm", 1, Color3.fromRGB(28, 92, 62), function()
+		toggle("AutoCoins")
+	end)
+	makeButton("ESP", 2, Color3.fromRGB(32, 62, 110), function()
+		toggle("EspOn")
+	end)
+	makeButton("Fling Murderer", 3, Color3.fromRGB(120, 42, 42), function()
 		if dependencies.Combat and dependencies.Combat.FlingMurderer then
-			dependencies.Combat.FlingMurderer(dependencies.ReadNumber and dependencies.ReadNumber("FlingPower", 180) or 180)
+			local power = 180
+			if dependencies.ReadNumber then
+				power = dependencies.ReadNumber("FlingPower", 180) or 180
+			end
+			dependencies.Combat.FlingMurderer(power)
 		end
 	end)
-	makeButton("Grab Gun", 4, Color3.fromRGB(70, 60, 30), function()
+	makeButton("Grab Gun", 4, Color3.fromRGB(110, 88, 30), function()
 		if dependencies.Combat and dependencies.Combat.GrabGun then
 			dependencies.Combat.GrabGun()
 		end
 	end)
-	makeButton("PANIC / Disable All", 5, Color3.fromRGB(120, 30, 30), function()
-		if dependencies.Panic then dependencies.Panic() end
-	end)
-	makeButton("Open Full Menu", 6, Color3.fromRGB(45, 45, 70), function()
-		if dependencies.Library then
-			pcall(function()
-				if dependencies.Library._waveWindow then
-					dependencies.Library._waveWindow:Show()
-				elseif dependencies.Library.Toggle then
-					dependencies.Library:Toggle()
-				end
-			end)
+	makeButton("PANIC", 5, Color3.fromRGB(150, 28, 28), function()
+		if dependencies.Panic then
+			dependencies.Panic()
 		end
 	end)
+	makeButton("Full Menu", 6, Color3.fromRGB(48, 52, 78), function()
+		if not dependencies.Library then
+			return
+		end
+		pcall(function()
+			if dependencies.Library._waveWindow then
+				dependencies.Library._waveWindow:Show()
+			elseif dependencies.Library.Toggle then
+				dependencies.Library:Toggle()
+			end
+		end)
+	end)
 
-	-- drag
 	local dragging, dragStart, startPos
-	frame.InputBegan:Connect(function(input)
+	root.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
 			dragging = true
 			dragStart = input.Position
-			startPos = frame.Position
+			startPos = root.Position
 		end
 	end)
-	frame.InputEnded:Connect(function(input)
+	root.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
 			dragging = false
 		end
@@ -6493,7 +6656,7 @@ function Mobile.create(dependencies)
 		dependencies.Input.InputChanged:Connect(function(input)
 			if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
 				local delta = input.Position - dragStart
-				frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+				root.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
 			end
 		end)
 	end
@@ -6501,10 +6664,13 @@ function Mobile.create(dependencies)
 	return {
 		Gui = screen,
 		Destroy = function()
-			pcall(function() screen:Destroy() end)
+			pcall(function()
+				screen:Destroy()
+			end)
 		end,
 	}
 end
+
 
 
 local exports = {
