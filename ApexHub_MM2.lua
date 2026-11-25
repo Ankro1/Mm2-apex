@@ -420,6 +420,7 @@ local Combat = {}
 local Config = {}
 local Application = {}
 local Settings = {}
+local Mobile = {}
 
 function Application.createEnvironment(host: any, uiSource: string?): (any, any)
 	local executor: any = if type(host.getgenv) == "function" then (host.getgenv :: any)() else host
@@ -6521,7 +6522,12 @@ function Application.start(host: any, uiSource: string?, loadLibrary: ((any) -> 
 		})
 		return interface
 	end
+	local mobileHandle: any
 	local function unload()
+		if mobileHandle then
+			pcall(mobileHandle.Destroy)
+			mobileHandle = nil
+		end
 		Lifecycle.unload({
 			State = state, Mover = automation.Mover, Farm = automation.Farm, Movement = controllers.Movement,
 			Hooks = controllers.Hooks, Esp = visual.Esp, Visuals = visual.Visuals, Settings = visual.Settings,
@@ -6572,9 +6578,9 @@ function Application.start(host: any, uiSource: string?, loadLibrary: ((any) -> 
 		})
 	end
 
-	-- Mobile GUI
-	pcall(function()
-		Mobile.create({
+	-- Quick panel (touch-friendly)
+	do
+		local okMobile, mobileResult = pcall(Mobile.create, {
 			Player = player,
 			Options = options,
 			Combat = controllers and controllers.Combat,
@@ -6582,11 +6588,17 @@ function Application.start(host: any, uiSource: string?, loadLibrary: ((any) -> 
 			Library = library,
 			Input = input,
 			Panic = panic,
+			Notify = function(message) Interface.notify(library, message) end,
 		})
-	end)
+		if okMobile then
+			mobileHandle = mobileResult
+		else
+			log("Quick panel failed: " .. tostring(mobileResult))
+		end
+	end
 
 		-- Runtime extras: godmode / invis / antifling / evade / hitbox
-	task.spawn(function()
+	environment.task.spawn(function()
 		local wasInvisible = false
 		while isRunning() do
 			pcall(function()
@@ -6616,7 +6628,7 @@ function Application.start(host: any, uiSource: string?, loadLibrary: ((any) -> 
 					end
 				end
 			end)
-			task.wait(0.2)
+			wait(0.2)
 		end
 	end)
 
@@ -6627,200 +6639,622 @@ end
 
 
 -- ============================================================
--- Mobile GUI (lightweight, touch-friendly)
+-- Mobile / Quick Panel GUI  (tabbed, animated, draggable)
 -- ============================================================
 
-local Mobile = {}
-
 function Mobile.create(dependencies)
-	local playerGui = dependencies.Player:FindFirstChildOfClass("PlayerGui") or dependencies.Player:WaitForChild("PlayerGui")
-	local screen = Instance.new("ScreenGui")
-	screen.Name = "ApexMobile"
-	screen.ResetOnSpawn = false
-	screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-	screen.IgnoreGuiInset = true
+	local player = dependencies.Player
+	local options = dependencies.Options or {}
+	local notify = dependencies.Notify or function() end
+	local TweenService = game:GetService("TweenService")
+	local UserInputService = dependencies.Input or game:GetService("UserInputService")
+	local playerGui = player:FindFirstChildOfClass("PlayerGui") or player:WaitForChild("PlayerGui")
+
+	local hiddenRoot
 	pcall(function()
-		if gethui then
-			screen.Parent = gethui()
-		else
-			screen.Parent = playerGui
-		end
+		if gethui then hiddenRoot = gethui() end
 	end)
-	if not screen.Parent then
-		screen.Parent = playerGui
-	end
+	local parent = hiddenRoot or playerGui
 
-	local root = Instance.new("Frame")
-	root.Name = "Root"
-	root.Size = UDim2.fromOffset(228, 0)
-	root.AutomaticSize = Enum.AutomaticSize.Y
-	root.Position = UDim2.new(1, -244, 0.5, -190)
-	root.BackgroundColor3 = Color3.fromRGB(12, 14, 20)
-	root.BackgroundTransparency = 0.08
-	root.BorderSizePixel = 0
-	root.Active = true
-	root.Parent = screen
-
-	local rootCorner = Instance.new("UICorner")
-	rootCorner.CornerRadius = UDim.new(0, 16)
-	rootCorner.Parent = root
-
-	local rootStroke = Instance.new("UIStroke")
-	rootStroke.Color = Color3.fromRGB(80, 120, 220)
-	rootStroke.Thickness = 1.2
-	rootStroke.Transparency = 0.35
-	rootStroke.Parent = root
-
-	local rootPad = Instance.new("UIPadding")
-	rootPad.PaddingTop = UDim.new(0, 12)
-	rootPad.PaddingBottom = UDim.new(0, 12)
-	rootPad.PaddingLeft = UDim.new(0, 12)
-	rootPad.PaddingRight = UDim.new(0, 12)
-	rootPad.Parent = root
-
-	local list = Instance.new("UIListLayout")
-	list.Padding = UDim.new(0, 8)
-	list.SortOrder = Enum.SortOrder.LayoutOrder
-	list.Parent = root
-
-	local header = Instance.new("Frame")
-	header.BackgroundTransparency = 1
-	header.Size = UDim2.new(1, 0, 0, 36)
-	header.LayoutOrder = 0
-	header.Parent = root
-
-	local title = Instance.new("TextLabel")
-	title.BackgroundTransparency = 1
-	title.Size = UDim2.new(1, -28, 1, 0)
-	title.Font = Enum.Font.GothamBold
-	title.Text = "APEX"
-	title.TextSize = 20
-	title.TextColor3 = Color3.fromRGB(235, 240, 255)
-	title.TextXAlignment = Enum.TextXAlignment.Left
-	title.Parent = header
-
-	local badge = Instance.new("TextLabel")
-	badge.BackgroundColor3 = Color3.fromRGB(40, 90, 200)
-	badge.Size = UDim2.fromOffset(44, 20)
-	badge.Position = UDim2.new(1, -44, 0.5, -10)
-	badge.Font = Enum.Font.GothamBold
-	badge.Text = "MM2"
-	badge.TextSize = 11
-	badge.TextColor3 = Color3.fromRGB(255, 255, 255)
-	badge.Parent = header
-	local badgeCorner = Instance.new("UICorner")
-	badgeCorner.CornerRadius = UDim.new(0, 6)
-	badgeCorner.Parent = badge
-
-	local function makeButton(text, order, color, callback)
-		local btn = Instance.new("TextButton")
-		btn.Size = UDim2.new(1, 0, 0, 46)
-		btn.BackgroundColor3 = color
-		btn.AutoButtonColor = true
-		btn.Font = Enum.Font.GothamMedium
-		btn.Text = text
-		btn.TextSize = 15
-		btn.TextColor3 = Color3.fromRGB(245, 247, 255)
-		btn.LayoutOrder = order
-		btn.Parent = root
-
-		local c = Instance.new("UICorner")
-		c.CornerRadius = UDim.new(0, 12)
-		c.Parent = btn
-
-		local s = Instance.new("UIStroke")
-		s.Color = Color3.fromRGB(255, 255, 255)
-		s.Transparency = 0.88
-		s.Thickness = 1
-		s.Parent = btn
-
-		local function fire()
-			pcall(callback)
-		end
-		btn.MouseButton1Click:Connect(fire)
-		btn.TouchTap:Connect(fire)
-		return btn
-	end
-
-	local function toggle(name)
-		local opt = dependencies.Options and dependencies.Options[name]
-		if opt and opt.SetValue then
-			pcall(function()
-				opt:SetValue(not opt.Value)
-			end)
-		end
-	end
-
-	makeButton("Farm", 1, Color3.fromRGB(28, 92, 62), function()
-		toggle("AutoCoins")
-	end)
-	makeButton("ESP", 2, Color3.fromRGB(32, 62, 110), function()
-		toggle("EspOn")
-	end)
-	makeButton("Fling Murderer", 3, Color3.fromRGB(120, 42, 42), function()
-		if dependencies.Combat and dependencies.Combat.FlingMurderer then
-			local power = 180
-			if dependencies.ReadNumber then
-				power = dependencies.ReadNumber("FlingPower", 180) or 180
+	-- kill leftovers from a previous execution
+	for _, container in ipairs({ parent, playerGui }) do
+		for _, child in ipairs(container:GetChildren()) do
+			if child.Name == "ApexMobile" then
+				pcall(function() child:Destroy() end)
 			end
-			dependencies.Combat.FlingMurderer(power)
 		end
-	end)
-	makeButton("Grab Gun", 4, Color3.fromRGB(110, 88, 30), function()
-		if dependencies.Combat and dependencies.Combat.GrabGun then
-			dependencies.Combat.GrabGun()
+	end
+
+	local C = {
+		Bg = Color3.fromRGB(13, 15, 22),
+		Panel = Color3.fromRGB(19, 22, 32),
+		Row = Color3.fromRGB(26, 30, 43),
+		RowHover = Color3.fromRGB(33, 38, 54),
+		Stroke = Color3.fromRGB(52, 60, 86),
+		Text = Color3.fromRGB(232, 236, 248),
+		Sub = Color3.fromRGB(134, 144, 174),
+		Accent = Color3.fromRGB(72, 118, 235),
+		AccentDark = Color3.fromRGB(44, 78, 170),
+		On = Color3.fromRGB(62, 198, 138),
+		Off = Color3.fromRGB(56, 62, 86),
+		Danger = Color3.fromRGB(208, 62, 74),
+		Warn = Color3.fromRGB(206, 150, 50),
+	}
+
+	local alive = true
+	local connections = {}
+	local syncers = {}
+
+	local function track(connection)
+		table.insert(connections, connection)
+		return connection
+	end
+
+	local function new(class, props, parentObject)
+		local object = Instance.new(class)
+		for key, value in pairs(props or {}) do
+			object[key] = value
 		end
-	end)
-	makeButton("PANIC", 5, Color3.fromRGB(150, 28, 28), function()
-		if dependencies.Panic then
-			dependencies.Panic()
-		end
-	end)
-	makeButton("Full Menu", 6, Color3.fromRGB(48, 52, 78), function()
-		if not dependencies.Library then
-			return
-		end
+		if parentObject then object.Parent = parentObject end
+		return object
+	end
+
+	local function tween(object, props, duration)
 		pcall(function()
-			if dependencies.Library._waveWindow then
-				dependencies.Library._waveWindow:Show()
-			elseif dependencies.Library.Toggle then
-				dependencies.Library:Toggle()
-			end
-		end)
-	end)
-
-	local dragging, dragStart, startPos
-	root.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-			dragging = true
-			dragStart = input.Position
-			startPos = root.Position
-		end
-	end)
-	root.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-			dragging = false
-		end
-	end)
-	if dependencies.Input then
-		dependencies.Input.InputChanged:Connect(function(input)
-			if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
-				local delta = input.Position - dragStart
-				root.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-			end
+			TweenService:Create(object, TweenInfo.new(duration or 0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props):Play()
 		end)
 	end
+
+	local function corner(object, radius)
+		return new("UICorner", { CornerRadius = UDim.new(0, radius) }, object)
+	end
+
+	local function stroke(object, color, thickness, transparency)
+		return new("UIStroke", {
+			Color = color,
+			Thickness = thickness or 1,
+			Transparency = transparency or 0,
+			ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+		}, object)
+	end
+
+	local function label(parentObject, text, size, font, color, alignment)
+		return new("TextLabel", {
+			BackgroundTransparency = 1,
+			Text = text,
+			TextSize = size,
+			Font = font,
+			TextColor3 = color,
+			TextXAlignment = alignment or Enum.TextXAlignment.Left,
+			Size = UDim2.new(1, 0, 1, 0),
+		}, parentObject)
+	end
+
+	-- ---------- root ----------
+	local screen = new("ScreenGui", {
+		Name = "ApexMobile",
+		ResetOnSpawn = false,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+		IgnoreGuiInset = true,
+		DisplayOrder = 999,
+	})
+	local okParent = pcall(function() screen.Parent = parent end)
+	if not okParent or not screen.Parent then screen.Parent = playerGui end
+
+	local viewport = screen.AbsoluteSize
+	if viewport.X < 100 or viewport.Y < 100 then viewport = Vector2.new(1280, 720) end
+
+	local panelW = math.min(304, viewport.X - 20)
+	local panelH = math.min(430, viewport.Y - 24)
+	local HEADER_H, TABS_H, FOOTER_H = 54, 38, 58
+
+	local panel = new("Frame", {
+		Name = "Panel",
+		Size = UDim2.fromOffset(panelW, panelH),
+		Position = UDim2.fromOffset(math.max(8, viewport.X - panelW - 12), math.max(12, (viewport.Y - panelH) / 2)),
+		BackgroundColor3 = C.Bg,
+		BorderSizePixel = 0,
+		Active = true,
+		ClipsDescendants = true,
+		Visible = UserInputService.TouchEnabled,
+	}, screen)
+	corner(panel, 16)
+	stroke(panel, C.Stroke, 1.2, 0.2)
+
+	-- ---------- header ----------
+	local header = new("Frame", {
+		Name = "Header",
+		Size = UDim2.new(1, 0, 0, HEADER_H),
+		BackgroundColor3 = C.Panel,
+		BorderSizePixel = 0,
+		Active = true,
+	}, panel)
+	new("UIGradient", {
+		Color = ColorSequence.new(C.Panel, C.Bg),
+		Rotation = 90,
+	}, header)
+
+	local logo = new("Frame", {
+		Size = UDim2.fromOffset(32, 32),
+		Position = UDim2.fromOffset(12, 11),
+		BackgroundColor3 = C.Accent,
+		BorderSizePixel = 0,
+	}, header)
+	corner(logo, 9)
+	new("UIGradient", { Color = ColorSequence.new(C.Accent, C.AccentDark), Rotation = 45 }, logo)
+	label(logo, "A", 18, Enum.Font.GothamBlack, Color3.new(1, 1, 1), Enum.TextXAlignment.Center)
+
+	local title = new("TextLabel", {
+		BackgroundTransparency = 1,
+		Position = UDim2.fromOffset(52, 8),
+		Size = UDim2.new(1, -110, 0, 20),
+		Text = "APEX HUB",
+		TextSize = 15,
+		Font = Enum.Font.GothamBold,
+		TextColor3 = C.Text,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}, header)
+
+	local subtitle = new("TextLabel", {
+		BackgroundTransparency = 1,
+		Position = UDim2.fromOffset(52, 28),
+		Size = UDim2.new(1, -110, 0, 16),
+		Text = "MM2  ·  all features off",
+		TextSize = 11,
+		Font = Enum.Font.Gotham,
+		TextColor3 = C.Sub,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}, header)
+
+	local minimize = new("TextButton", {
+		Size = UDim2.fromOffset(30, 30),
+		Position = UDim2.new(1, -42, 0, 12),
+		BackgroundColor3 = C.Row,
+		AutoButtonColor = false,
+		Text = "–",
+		TextSize = 20,
+		Font = Enum.Font.GothamBold,
+		TextColor3 = C.Sub,
+		BorderSizePixel = 0,
+	}, header)
+	corner(minimize, 8)
+
+	-- ---------- launcher pill ----------
+	local launcher = new("TextButton", {
+		Name = "Launcher",
+		Size = UDim2.fromOffset(46, 46),
+		Position = UDim2.fromOffset(viewport.X - 62, math.max(12, viewport.Y * 0.5 - 23)),
+		BackgroundColor3 = C.Accent,
+		AutoButtonColor = false,
+		Text = "A",
+		TextSize = 20,
+		Font = Enum.Font.GothamBlack,
+		TextColor3 = Color3.new(1, 1, 1),
+		BorderSizePixel = 0,
+		Visible = not panel.Visible,
+	}, screen)
+	corner(launcher, 23)
+	stroke(launcher, Color3.new(1, 1, 1), 1, 0.8)
+	new("UIGradient", { Color = ColorSequence.new(C.Accent, C.AccentDark), Rotation = 45 }, launcher)
+
+	local function setPanelVisible(visible)
+		panel.Visible = visible
+		launcher.Visible = not visible
+		if visible then
+			-- keep the panel on screen after the launcher moved
+			local vp = screen.AbsoluteSize
+			local size = panel.AbsoluteSize
+			local pos = panel.AbsolutePosition
+			panel.Position = UDim2.fromOffset(
+				math.clamp(pos.X, 0, math.max(0, vp.X - size.X)),
+				math.clamp(pos.Y, 0, math.max(0, vp.Y - size.Y))
+			)
+		end
+	end
+
+	-- ---------- dragging ----------
+	local function makeDraggable(handle, target, onTap)
+		local dragging, moved = false, false
+		local startPoint, startPosition
+		track(handle.InputBegan:Connect(function(input)
+			local kind = input.UserInputType
+			if kind == Enum.UserInputType.Touch or kind == Enum.UserInputType.MouseButton1 then
+				dragging, moved = true, false
+				startPoint = input.Position
+				startPosition = target.Position
+			end
+		end))
+		track(UserInputService.InputChanged:Connect(function(input)
+			if not dragging then return end
+			local kind = input.UserInputType
+			if kind ~= Enum.UserInputType.Touch and kind ~= Enum.UserInputType.MouseMovement then return end
+			local delta = input.Position - startPoint
+			if not moved and delta.Magnitude > 6 then moved = true end
+			if not moved then return end
+			local vp, size = screen.AbsoluteSize, target.AbsoluteSize
+			target.Position = UDim2.fromOffset(
+				math.clamp(startPosition.X.Offset + delta.X, 0, math.max(0, vp.X - size.X)),
+				math.clamp(startPosition.Y.Offset + delta.Y, 0, math.max(0, vp.Y - size.Y))
+			)
+		end))
+		track(UserInputService.InputEnded:Connect(function(input)
+			local kind = input.UserInputType
+			if not dragging then return end
+			if kind == Enum.UserInputType.Touch or kind == Enum.UserInputType.MouseButton1 then
+				dragging = false
+				if not moved and onTap then onTap() end
+			end
+		end))
+	end
+
+	makeDraggable(header, panel)
+	makeDraggable(launcher, launcher, function() setPanelVisible(true) end)
+	track(minimize.Activated:Connect(function() setPanelVisible(false) end))
+
+	-- ---------- tabs ----------
+	local tabDefs = {
+		{
+			Name = "Main",
+			Items = {
+				{ Toggle = "AutoCoins", Label = "Auto Farm Coins" },
+				{ Toggle = "AutoGrabGun", Label = "Auto Grab Gun" },
+				{ Toggle = "AutoEvade", Label = "Auto Evade Murderer" },
+				{ Toggle = "AntiFling", Label = "Anti Fling" },
+				{ Toggle = "Godmode", Label = "Godmode" },
+				{ Toggle = "Invisibility", Label = "Invisibility" },
+			},
+		},
+		{
+			Name = "Combat",
+			Items = {
+				{ Toggle = "KillAura", Label = "Kill Aura" },
+				{ Toggle = "AutoKillAll", Label = "Auto Kill All" },
+				{ Toggle = "AutoKillSheriff", Label = "Auto Kill Sheriff" },
+				{ Toggle = "AutoShoot", Label = "Auto Shoot" },
+				{ Toggle = "Triggerbot", Label = "Triggerbot" },
+				{ Toggle = "KnifeSilentAim", Label = "Knife Silent Aim" },
+				{ Toggle = "GunSilentAim", Label = "Gun Silent Aim" },
+				{ Toggle = "HitboxExpand", Label = "Hitbox Expand" },
+				{
+					Action = "Fling Murderer", Color = C.Danger,
+					Run = function()
+						local combat = dependencies.Combat
+						if not (combat and combat.FlingMurderer) then return false, "Combat unavailable" end
+						local power = dependencies.ReadNumber and dependencies.ReadNumber("FlingPower", 180) or 180
+						return combat.FlingMurderer(power)
+					end,
+				},
+				{
+					Action = "Fling Sheriff", Color = C.Danger,
+					Run = function()
+						local combat = dependencies.Combat
+						if not (combat and combat.FlingSheriff) then return false, "Combat unavailable" end
+						local power = dependencies.ReadNumber and dependencies.ReadNumber("FlingPower", 180) or 180
+						return combat.FlingSheriff(power)
+					end,
+				},
+				{
+					Action = "Grab Gun", Color = C.Warn,
+					Run = function()
+						local combat = dependencies.Combat
+						if not (combat and combat.GrabGun) then return false, "Combat unavailable" end
+						return combat.GrabGun()
+					end,
+				},
+			},
+		},
+		{
+			Name = "Visual",
+			Items = {
+				{ Toggle = "EspOn", Label = "ESP" },
+				{ Toggle = "EspCoins", Label = "ESP · Coins" },
+				{ Toggle = "EspTraps", Label = "ESP · Traps" },
+				{ Toggle = "EspTracers", Label = "ESP · Tracers" },
+				{ Toggle = "Fullbright", Label = "Fullbright" },
+				{ Toggle = "LowGraphics", Label = "Low Graphics" },
+			},
+		},
+		{
+			Name = "Move",
+			Items = {
+				{ Toggle = "Fly", Label = "Fly" },
+				{ Toggle = "Noclip", Label = "Noclip" },
+				{ Toggle = "SpeedOn", Label = "Speed" },
+				{ Toggle = "JumpOn", Label = "Jump Power" },
+				{ Toggle = "InfJump", Label = "Infinite Jump" },
+				{ Toggle = "ClickTp", Label = "Click Teleport" },
+			},
+		},
+	}
+
+	local tabBar = new("Frame", {
+		Name = "Tabs",
+		Position = UDim2.fromOffset(0, HEADER_H),
+		Size = UDim2.new(1, 0, 0, TABS_H),
+		BackgroundTransparency = 1,
+	}, panel)
+	new("UIPadding", {
+		PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10),
+		PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4),
+	}, tabBar)
+	new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		Padding = UDim.new(0, 4),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, tabBar)
+
+	local content = new("Frame", {
+		Name = "Content",
+		Position = UDim2.fromOffset(0, HEADER_H + TABS_H),
+		Size = UDim2.new(1, 0, 1, -(HEADER_H + TABS_H + FOOTER_H)),
+		BackgroundTransparency = 1,
+		ClipsDescendants = true,
+	}, panel)
+
+	local pages, tabButtons = {}, {}
+
+	local function selectTab(index)
+		for i, page in ipairs(pages) do
+			page.Visible = (i == index)
+			local button = tabButtons[i]
+			tween(button, {
+				BackgroundColor3 = (i == index) and C.Accent or C.Row,
+				TextColor3 = (i == index) and Color3.new(1, 1, 1) or C.Sub,
+			})
+		end
+	end
+
+	local function readToggle(name)
+		local option = options[name]
+		return option ~= nil and option.Value == true
+	end
+
+	local function buildToggleRow(page, item, order)
+		local option = options[item.Toggle]
+		local row = new("TextButton", {
+			Size = UDim2.new(1, 0, 0, 44),
+			BackgroundColor3 = C.Row,
+			AutoButtonColor = false,
+			Text = "",
+			BorderSizePixel = 0,
+			LayoutOrder = order,
+		}, page)
+		corner(row, 10)
+		stroke(row, C.Stroke, 1, 0.65)
+
+		local text = new("TextLabel", {
+			BackgroundTransparency = 1,
+			Position = UDim2.fromOffset(14, 0),
+			Size = UDim2.new(1, -76, 1, 0),
+			Text = item.Label,
+			TextSize = 14,
+			Font = Enum.Font.GothamMedium,
+			TextColor3 = option and C.Text or C.Sub,
+			TextTransparency = option and 0 or 0.4,
+			TextXAlignment = Enum.TextXAlignment.Left,
+		}, row)
+
+		local track_ = new("Frame", {
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, -12, 0.5, 0),
+			Size = UDim2.fromOffset(42, 22),
+			BackgroundColor3 = C.Off,
+			BorderSizePixel = 0,
+		}, row)
+		corner(track_, 11)
+		local knob = new("Frame", {
+			AnchorPoint = Vector2.new(0, 0.5),
+			Position = UDim2.new(0, 3, 0.5, 0),
+			Size = UDim2.fromOffset(16, 16),
+			BackgroundColor3 = Color3.new(1, 1, 1),
+			BorderSizePixel = 0,
+		}, track_)
+		corner(knob, 8)
+
+		local shown = nil
+		local function paint(state)
+			if shown == state then return end
+			shown = state
+			tween(track_, { BackgroundColor3 = state and C.On or C.Off })
+			tween(knob, { Position = state and UDim2.new(1, -19, 0.5, 0) or UDim2.new(0, 3, 0.5, 0) })
+		end
+
+		track(row.Activated:Connect(function()
+			local current = options[item.Toggle]
+			if not (current and current.SetValue) then
+				notify(item.Label .. " is unavailable")
+				return
+			end
+			local target = not readToggle(item.Toggle)
+			local ok = pcall(function() current:SetValue(target) end)
+			if ok then paint(target) end
+		end))
+
+		table.insert(syncers, function()
+			local state = readToggle(item.Toggle)
+			paint(state)
+			return state
+		end)
+	end
+
+	local function buildActionRow(page, item, order)
+		local button = new("TextButton", {
+			Size = UDim2.new(1, 0, 0, 44),
+			BackgroundColor3 = item.Color or C.Accent,
+			AutoButtonColor = false,
+			Text = item.Action,
+			TextSize = 14,
+			Font = Enum.Font.GothamBold,
+			TextColor3 = Color3.new(1, 1, 1),
+			BorderSizePixel = 0,
+			LayoutOrder = order,
+		}, page)
+		corner(button, 10)
+		local busy = false
+		track(button.Activated:Connect(function()
+			if busy then return end
+			busy = true
+			tween(button, { BackgroundTransparency = 0.45 }, 0.08)
+			task.spawn(function()
+				local ok, result, reason = pcall(item.Run)
+				if not ok then
+					notify(item.Action .. ": " .. tostring(result))
+				elseif result == false then
+					notify(item.Action .. ": " .. tostring(reason or "failed"))
+				end
+				tween(button, { BackgroundTransparency = 0 }, 0.18)
+				busy = false
+			end)
+		end))
+	end
+
+	for index, definition in ipairs(tabDefs) do
+		local count = #tabDefs
+		local tabButton = new("TextButton", {
+			Size = UDim2.new(1 / count, -(4 * (count - 1)) / count, 1, 0),
+			BackgroundColor3 = C.Row,
+			AutoButtonColor = false,
+			Text = definition.Name,
+			TextSize = 12,
+			Font = Enum.Font.GothamBold,
+			TextColor3 = C.Sub,
+			BorderSizePixel = 0,
+			LayoutOrder = index,
+		}, tabBar)
+		corner(tabButton, 8)
+		tabButtons[index] = tabButton
+
+		local page = new("ScrollingFrame", {
+			Name = definition.Name,
+			Size = UDim2.new(1, 0, 1, 0),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			ScrollBarThickness = 3,
+			ScrollBarImageColor3 = C.Accent,
+			CanvasSize = UDim2.new(0, 0, 0, 0),
+			AutomaticCanvasSize = Enum.AutomaticSize.Y,
+			ScrollingDirection = Enum.ScrollingDirection.Y,
+			Visible = false,
+		}, content)
+		new("UIPadding", {
+			PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 12),
+			PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 8),
+		}, page)
+		new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, page)
+		pages[index] = page
+
+		for order, item in ipairs(definition.Items) do
+			if item.Toggle then
+				buildToggleRow(page, item, order)
+			else
+				buildActionRow(page, item, order)
+			end
+		end
+
+		track(tabButton.Activated:Connect(function() selectTab(index) end))
+	end
+
+	-- ---------- footer ----------
+	local footer = new("Frame", {
+		Name = "Footer",
+		AnchorPoint = Vector2.new(0, 1),
+		Position = UDim2.new(0, 0, 1, 0),
+		Size = UDim2.new(1, 0, 0, FOOTER_H),
+		BackgroundColor3 = C.Panel,
+		BorderSizePixel = 0,
+	}, panel)
+	new("UIPadding", {
+		PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10),
+		PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8),
+	}, footer)
+	new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		Padding = UDim.new(0, 8),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, footer)
+
+	local function footerButton(text, color, order, callback)
+		local button = new("TextButton", {
+			Size = UDim2.new(0.5, -4, 1, 0),
+			BackgroundColor3 = color,
+			AutoButtonColor = false,
+			Text = text,
+			TextSize = 14,
+			Font = Enum.Font.GothamBold,
+			TextColor3 = Color3.new(1, 1, 1),
+			BorderSizePixel = 0,
+			LayoutOrder = order,
+		}, footer)
+		corner(button, 10)
+		track(button.Activated:Connect(function()
+			tween(button, { BackgroundTransparency = 0.4 }, 0.07)
+			task.delay(0.12, function() tween(button, { BackgroundTransparency = 0 }, 0.15) end)
+			pcall(callback)
+		end))
+		return button
+	end
+
+	footerButton("PANIC", C.Danger, 1, function()
+		if dependencies.Panic then dependencies.Panic() end
+		for _, sync in ipairs(syncers) do pcall(sync) end
+	end)
+
+	footerButton("Full Menu", C.Accent, 2, function()
+		local library = dependencies.Library
+		if not library then return end
+		local window = library._waveWindow
+		local opened = false
+		if window then
+			for _, method in ipairs({ "Show", "Open", "Toggle" }) do
+				if type(window[method]) == "function" then
+					opened = pcall(window[method], window)
+					if opened then break end
+				end
+			end
+		end
+		if not opened and type(library.Toggle) == "function" then
+			pcall(library.Toggle, library)
+		end
+	end)
+
+	-- divider line above footer
+	new("Frame", {
+		AnchorPoint = Vector2.new(0, 1),
+		Position = UDim2.new(0, 0, 1, -FOOTER_H),
+		Size = UDim2.new(1, 0, 0, 1),
+		BackgroundColor3 = C.Stroke,
+		BackgroundTransparency = 0.5,
+		BorderSizePixel = 0,
+	}, panel)
+
+	selectTab(1)
+
+	-- ---------- state sync ----------
+	task.spawn(function()
+		while alive and screen.Parent do
+			local active = 0
+			for _, sync in ipairs(syncers) do
+				local ok, state = pcall(sync)
+				if ok and state then active = active + 1 end
+			end
+			subtitle.Text = "MM2  ·  " .. (active == 0 and "all features off" or (tostring(active) .. " active"))
+			task.wait(0.25)
+		end
+	end)
 
 	return {
 		Gui = screen,
+		Show = function() setPanelVisible(true) end,
+		Hide = function() setPanelVisible(false) end,
 		Destroy = function()
-			pcall(function()
-				screen:Destroy()
-			end)
+			alive = false
+			for _, connection in ipairs(connections) do
+				pcall(function() connection:Disconnect() end)
+			end
+			pcall(function() screen:Destroy() end)
 		end,
 	}
 end
-
 
 
 local exports = {
