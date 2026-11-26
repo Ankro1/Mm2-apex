@@ -1130,6 +1130,11 @@ function Esp.update(dependencies: EspUpdateDependencies)
 		return
 	end
 	local roles = dependencies.Select(readOption("EspRoles", {}))
+	if next(roles) == nil then
+		-- filter value came back empty / in an unknown shape: that used to hide every player
+		roles = { Murderer = true, Sheriff = true, Hero = true, Innocent = true }
+	end
+	local shown = 0
 	local localRoot = dependencies.LocalParts()
 	for _, player: any in ipairs(dependencies.Players:GetPlayers() :: any) do
 		if player == dependencies.Player then continue end
@@ -1138,7 +1143,12 @@ function Esp.update(dependencies: EspUpdateDependencies)
 		local character, root = dependencies.CharacterParts(player)
 		if role and roles[role] and character and root then
 			if not entry then
-				entry = dependencies.CreateEntry(player.Name)
+				local okCreate, created = pcall(dependencies.CreateEntry, player.Name)
+				if not okCreate then
+					if not esp.WarnedCreate then esp.WarnedCreate = true; warn("[Apex ESP] could not create entry: " .. tostring(created)) end
+					continue
+				end
+				entry = created
 				esp.Entries[player] = entry
 			end
 			local distance = if localRoot then dependencies.Floor((root.Position - localRoot.Position).Magnitude) else 0
@@ -1146,7 +1156,13 @@ function Esp.update(dependencies: EspUpdateDependencies)
 			local text = player.DisplayName .. " | " .. role
 			if readOption("EspDistance", true) then text ..= " | " .. tostring(distance) .. "m" end
 			local head = character:FindFirstChild("Head") or root
-			dependencies.UpdateEntry(entry, character, head, esp.Color(role), text)
+			local okEntry, entryError = pcall(dependencies.UpdateEntry, entry, character, head, esp.Color(role), text)
+			if okEntry then
+				shown += 1
+			elseif not esp.WarnedUpdate then
+				esp.WarnedUpdate = true
+				warn("[Apex ESP] update failed: " .. tostring(entryError))
+			end
 		else
 			if entry then dependencies.Hide(entry) end
 		end
@@ -1156,6 +1172,14 @@ function Esp.update(dependencies: EspUpdateDependencies)
 			dependencies.DestroyEntry(entry)
 			esp.Entries[player] = nil
 		end
+	end
+
+	if shown == 0 and #dependencies.Players:GetPlayers() > 1 and os.clock() - (esp.LastDiag or 0) > 6 then
+		esp.LastDiag = os.clock()
+		local rolesKnown, mapLoaded = 0, false
+		pcall(function() for _ in pairs(round.Data()) do rolesKnown += 1 end end)
+		pcall(function() mapLoaded = round.Map() ~= nil end)
+		warn(string.format("[Apex ESP] nothing drawn | role entries: %d | map loaded: %s", rolesKnown, tostring(mapLoaded)))
 	end
 
 	local gun = if readOption("EspGun", true) then round.GunDrop() else nil
@@ -3585,7 +3609,11 @@ function Round.info(round: { Data: () -> { [string]: unknown } }, player: RoundP
 
 	-- PlayerData missing (module path changed / not loaded yet): derive the role from tools
 	-- while a map is loaded, so ESP, fling targeting and kill logic keep working.
-	if next(data) == nil and round.Map() then
+	local covered = false
+	for _, other in ipairs(game:GetService("Players"):GetPlayers()) do
+		if data[other.Name] then covered = true break end
+	end
+	if not covered and round.Map() then
 		local character = player.Character
 		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 		if humanoid then
