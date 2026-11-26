@@ -6744,8 +6744,17 @@ function Mobile.create(dependencies)
 	local viewport = screen.AbsoluteSize
 	if viewport.X < 100 or viewport.Y < 100 then viewport = Vector2.new(1280, 720) end
 
-	local panelW = math.min(304, viewport.X - 20)
-	local panelH = math.min(430, viewport.Y - 24)
+	-- Keep the quick panel usable across phone rotations and viewport changes.
+	local function getPanelSize(viewportSize)
+		-- Never make the panel larger than the actual viewport.
+		local availableWidth = math.max(1, viewportSize.X - 16)
+		local availableHeight = math.max(1, viewportSize.Y - 16)
+		local width = math.min(340, availableWidth)
+		local height = math.min(500, availableHeight)
+		return width, height
+	end
+
+	local panelW, panelH = getPanelSize(viewport)
 	local HEADER_H, TABS_H, FOOTER_H = 54, 38, 58
 
 	local panel = new("Frame", {
@@ -6837,18 +6846,42 @@ function Mobile.create(dependencies)
 	stroke(launcher, Color3.new(1, 1, 1), 1, 0.8)
 	new("UIGradient", { Color = ColorSequence.new(C.Accent, C.AccentDark), Rotation = 45 }, launcher)
 
+	local function clampGuiPosition(guiObject, viewportSize)
+		local size = guiObject.AbsoluteSize
+		local pos = guiObject.AbsolutePosition
+		local maxX = math.max(0, viewportSize.X - size.X)
+		local maxY = math.max(0, viewportSize.Y - size.Y)
+		guiObject.Position = UDim2.fromOffset(
+			math.clamp(pos.X, 0, maxX),
+			math.clamp(pos.Y, 0, maxY)
+		)
+	end
+
+	local function applyViewportLayout()
+		if not alive or not screen.Parent then return end
+		local vp = screen.AbsoluteSize
+		if vp.X < 100 or vp.Y < 100 then return end
+
+		local width, height = getPanelSize(vp)
+		panel.Size = UDim2.fromOffset(width, height)
+		clampGuiPosition(panel, vp)
+
+		local launcherSize = launcher.AbsoluteSize
+		local launcherX = math.clamp(launcher.Position.X.Offset, 0, math.max(0, vp.X - launcherSize.X))
+		local launcherY = math.clamp(launcher.Position.Y.Offset, 0, math.max(0, vp.Y - launcherSize.Y))
+		launcher.Position = UDim2.fromOffset(launcherX, launcherY)
+	end
+
+	track(screen:GetPropertyChangedSignal("AbsoluteSize"):Connect(applyViewportLayout))
+	-- Apply once immediately; the first AbsoluteSize signal may have fired
+	-- before the listener was connected.
+	applyViewportLayout()
+
 	local function setPanelVisible(visible)
 		panel.Visible = visible
 		launcher.Visible = not visible
 		if visible then
-			-- keep the panel on screen after the launcher moved
-			local vp = screen.AbsoluteSize
-			local size = panel.AbsoluteSize
-			local pos = panel.AbsolutePosition
-			panel.Position = UDim2.fromOffset(
-				math.clamp(pos.X, 0, math.max(0, vp.X - size.X)),
-				math.clamp(pos.Y, 0, math.max(0, vp.Y - size.Y))
-			)
+			clampGuiPosition(panel, screen.AbsoluteSize)
 		end
 	end
 
@@ -6857,6 +6890,7 @@ function Mobile.create(dependencies)
 		local dragging, moved = false, false
 		local startPoint, startPosition
 		track(handle.InputBegan:Connect(function(input)
+			if not alive or not handle.Parent or not target.Parent then return end
 			local kind = input.UserInputType
 			if kind == Enum.UserInputType.Touch or kind == Enum.UserInputType.MouseButton1 then
 				dragging, moved = true, false
@@ -6865,7 +6899,7 @@ function Mobile.create(dependencies)
 			end
 		end))
 		track(UserInputService.InputChanged:Connect(function(input)
-			if not dragging then return end
+			if not alive or not dragging or not startPoint or not startPosition then return end
 			local kind = input.UserInputType
 			if kind ~= Enum.UserInputType.Touch and kind ~= Enum.UserInputType.MouseMovement then return end
 			local delta = input.Position - startPoint
@@ -6882,7 +6916,8 @@ function Mobile.create(dependencies)
 			if not dragging then return end
 			if kind == Enum.UserInputType.Touch or kind == Enum.UserInputType.MouseButton1 then
 				dragging = false
-				if not moved and onTap then onTap() end
+				startPoint, startPosition = nil, nil
+				if alive and not moved and onTap then onTap() end
 			end
 		end))
 	end
