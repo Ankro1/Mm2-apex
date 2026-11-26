@@ -594,7 +594,11 @@ function Round.create(dependencies: RoundDependencies): any
 		Watchers = {},
 	}
 
-	function round.Data() return Round.data(dependencies.GetPlayerDataState()) end
+	function round.Data()
+		local data = Round.data(dependencies.GetPlayerDataState())
+		if next(data) == nil and type(round.RemoteData) == "table" then return round.RemoteData end
+		return data
+	end
 	function round.Info(player: any) return Round.info(round, player) end
 	function round.Tool(player: any, tag: string) return Round.tool(Inventory.findTool, player, tag) end
 	function round.IsAlive(player: any) return Round.isAlive(round, Characters.parts :: any, player) end
@@ -1123,6 +1127,13 @@ function Esp.updateWorldObjects(esp, dependencies)
 end
 
 
+function Esp.guessRole(player: any, character: any): string
+	local backpack = player:FindFirstChildOfClass("Backpack")
+	if Inventory.findTool(character, "Weapon_Knife") or Inventory.findTool(backpack, "Weapon_Knife") then return "Murderer" end
+	if Inventory.findTool(character, "Weapon_Gun") or Inventory.findTool(backpack, "Weapon_Gun") then return "Sheriff" end
+	return "Innocent"
+end
+
 function Esp.update(dependencies: EspUpdateDependencies)
 	local readOption, esp, round = dependencies.ReadOption, dependencies.Esp, dependencies.Round
 	if not readOption("EspOn", false) then
@@ -1140,7 +1151,10 @@ function Esp.update(dependencies: EspUpdateDependencies)
 		if player == dependencies.Player then continue end
 		local entry = esp.Entries[player]
 		local role = round.Role(player)
-		local character, root = dependencies.CharacterParts(player)
+		local character, root, humanoid = dependencies.CharacterParts(player)
+		if not role and character and root and (not humanoid or humanoid.Health > 0) then
+			role = Esp.guessRole(player, character)
+		end
 		if role and roles[role] and character and root then
 			if not entry then
 				local okCreate, created = pcall(dependencies.CreateEntry, player.Name)
@@ -1179,7 +1193,9 @@ function Esp.update(dependencies: EspUpdateDependencies)
 		local rolesKnown, mapLoaded = 0, false
 		pcall(function() for _ in pairs(round.Data()) do rolesKnown += 1 end end)
 		pcall(function() mapLoaded = round.Map() ~= nil end)
-		warn(string.format("[Apex ESP] nothing drawn | role entries: %d | map loaded: %s", rolesKnown, tostring(mapLoaded)))
+		local report = string.format("ESP: nothing drawn | role entries: %d | map: %s", rolesKnown, tostring(mapLoaded))
+		warn("[Apex] " .. report)
+		if esp.Notify then pcall(esp.Notify, report) end
 	end
 
 	local gun = if readOption("EspGun", true) then round.GunDrop() else nil
@@ -3751,6 +3767,7 @@ function Round.coinCollected(round: any, stats: any, farm: any, notify: (string)
 end
 
 function Round.playerDataChanged(round: any, data: any)
+	if type(data) == "table" then round.RemoteData = data end
 	if type(data) == "table" and next(data) == nil then
 		table.clear(round.Bags)
 		round.Gun = nil
@@ -6639,6 +6656,7 @@ function Application.start(host: any, uiSource: string?, loadLibrary: ((any) -> 
 		GetSettings = function() return environment.settings() end,
 		LowestQuality = function() return environment.Enum.QualityLevel.Level01 end,
 	})
+	visual.Esp.Notify = function(message) Interface.notify(library, message) end
 	local support = Application.createSupport({
 		Player = player, Players = players, Game = gameObject, Workspace = workspace, Event = gameState.Event,
 		Stats = stats, Teleport = teleport, Http = http, DateTime = environment.DateTime, ReadOption = readOption,
