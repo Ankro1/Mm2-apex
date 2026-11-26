@@ -1113,20 +1113,27 @@ function Esp.update(dependencies: EspUpdateDependencies)
 		return
 	end
 	local roles = dependencies.Select(readOption("EspRoles", {}))
+	-- if user left the multi-select empty, treat every known role as enabled
+	local anyRole = next(roles) ~= nil
 	local localRoot = dependencies.LocalParts()
 	for _, player: any in ipairs(dependencies.Players:GetPlayers() :: any) do
 		if player == dependencies.Player then continue end
 		local entry = esp.Entries[player]
 		local role = round.Role(player)
+		-- fallback when PlayerData has not arrived yet
+		if not role then
+			role = "Innocent"
+		end
 		local character, root = dependencies.CharacterParts(player)
-		if role and roles[role] and character and root then
+		local allowed = (not anyRole) or roles[role] or roles["Innocent"]
+		if allowed and character and root then
 			if not entry then
 				entry = dependencies.CreateEntry(player.Name)
 				esp.Entries[player] = entry
 			end
 			local distance = if localRoot then dependencies.Floor((root.Position - localRoot.Position).Magnitude) else 0
 			entry.IsMurderer = (role == "Murderer")
-			local text = player.DisplayName .. " | " .. role
+			local text = player.DisplayName .. " | " .. tostring(role)
 			if readOption("EspDistance", true) then text ..= " | " .. tostring(distance) .. "m" end
 			local head = character:FindFirstChild("Head") or root
 			dependencies.UpdateEntry(entry, character, head, esp.Color(role), text)
@@ -1588,13 +1595,10 @@ function Combat.flingTarget(combat, player, power)
 		return false, "No local character"
 	end
 
-	if type(combat.Run) ~= "function" then
-		return false, "Combat runner missing"
-	end
-
-	return combat.Run(function()
+	-- Prefer combat.Run when available (handles Busy + mover restore),
+	-- but fall back to a direct self-contained fling if Run is missing.
+	local function doFling()
 		local saved = localRoot.CFrame
-		local humanoid = localRoot.Parent and localRoot.Parent:FindFirstChildOfClass("Humanoid")
 		local savedCollide = {}
 
 		for _, part in ipairs(localRoot.Parent:GetDescendants()) do
@@ -1604,26 +1608,34 @@ function Combat.flingTarget(combat, player, power)
 			end
 		end
 
-		-- build angular force on local root, then collide into target
+		-- Strong angular + linear force
 		local bav = Instance.new("BodyAngularVelocity")
 		bav.Name = "ApexFling"
-		bav.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
-		bav.AngularVelocity = Vector3.new(power, power, power)
+		bav.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+		bav.P = 999999
+		bav.AngularVelocity = Vector3.new(power * 2, power * 2, power * 2)
 		bav.Parent = localRoot
 
 		local bv = Instance.new("BodyVelocity")
 		bv.Name = "ApexFlingV"
-		bv.MaxForce = Vector3.new(1e9, 1e9, 1e9)
-		bv.Velocity = Vector3.new(0, power * 0.35, 0)
+		bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+		bv.P = 999999
+		bv.Velocity = Vector3.new(0, power * 0.6, 0)
 		bv.Parent = localRoot
 
-		for _ = 1, 18 do
+		-- Aggressive collision frames
+		for i = 1, 28 do
 			if not root.Parent or not localRoot.Parent then
 				break
 			end
-			localRoot.CFrame = root.CFrame
-			localRoot.AssemblyLinearVelocity = Vector3.new(math.random(-power, power), power, math.random(-power, power))
-			localRoot.AssemblyAngularVelocity = Vector3.new(power, power, power)
+			-- stick to target then push hard
+			localRoot.CFrame = root.CFrame * CFrame.new(0, 0, -0.5)
+			localRoot.AssemblyLinearVelocity = Vector3.new(
+				math.random(-power * 1.4, power * 1.4),
+				power * 1.1,
+				math.random(-power * 1.4, power * 1.4)
+			)
+			localRoot.AssemblyAngularVelocity = Vector3.new(power * 2, power * 2, power * 2)
 			task.wait()
 		end
 
@@ -1641,9 +1653,23 @@ function Combat.flingTarget(combat, player, power)
 			localRoot.AssemblyLinearVelocity = Vector3.zero
 			localRoot.AssemblyAngularVelocity = Vector3.zero
 		end
-	end)
+		return true
+	end
+
+	if type(combat.Run) == "function" then
+		local ok = combat.Run(doFling)
+		return ok, (not ok) and "Fling interrupted" or nil
+	end
+
+	local ok, err = pcall(doFling)
+	if not ok then
+		return false, tostring(err)
+	end
+	return true
 end
 
+
+local _apexHitboxOriginal = {}
 
 function Combat.hitboxExpand(combat, size)
 	size = tonumber(size) or 6
@@ -1655,6 +1681,9 @@ function Combat.hitboxExpand(combat, size)
 		if character then
 			local root = character:FindFirstChild("HumanoidRootPart")
 			if root and root:IsA("BasePart") then
+				if not _apexHitboxOriginal[root] then
+					_apexHitboxOriginal[root] = { Size = root.Size, Transparency = root.Transparency, CanCollide = root.CanCollide }
+				end
 				pcall(function()
 					root.Size = Vector3.new(size, size, size)
 					root.Transparency = 0.65
@@ -1663,6 +1692,19 @@ function Combat.hitboxExpand(combat, size)
 			end
 		end
 	end
+end
+
+function Combat.restoreHitboxes()
+	for root, data in pairs(_apexHitboxOriginal) do
+		if root and root.Parent then
+			pcall(function()
+				root.Size = data.Size
+				root.Transparency = data.Transparency
+				root.CanCollide = data.CanCollide
+			end)
+		end
+	end
+	table.clear(_apexHitboxOriginal)
 end
 
 
@@ -2499,6 +2541,11 @@ function Lifecycle.panic(dependencies)
 			end
 		end
 	end
+	pcall(function()
+		if Combat and Combat.restoreHitboxes then
+			Combat.restoreHitboxes()
+		end
+	end)
 	if dependencies.Notify then
 		dependencies.Notify("Panic activated — all features off")
 	end
@@ -4380,6 +4427,15 @@ function Movement.applyGodmode(player, enabled)
 		pcall(function()
 			humanoid.MaxHealth = math.huge
 			humanoid.Health = math.huge
+			humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+			humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+		end)
+	else
+		pcall(function()
+			humanoid.MaxHealth = 100
+			if humanoid.Health > 100 then humanoid.Health = 100 end
+			humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
+			humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
 		end)
 	end
 end
@@ -6625,6 +6681,8 @@ function Application.start(host: any, uiSource: string?, loadLibrary: ((any) -> 
 					})
 					if readOption("HitboxExpand", false) and controllers.Combat.HitboxExpand then
 						controllers.Combat.HitboxExpand(readNumber("HitboxSize", 6))
+					elseif Combat.restoreHitboxes then
+						Combat.restoreHitboxes()
 					end
 				end
 			end)
@@ -6744,17 +6802,8 @@ function Mobile.create(dependencies)
 	local viewport = screen.AbsoluteSize
 	if viewport.X < 100 or viewport.Y < 100 then viewport = Vector2.new(1280, 720) end
 
-	-- Keep the quick panel usable across phone rotations and viewport changes.
-	local function getPanelSize(viewportSize)
-		-- Never make the panel larger than the actual viewport.
-		local availableWidth = math.max(1, viewportSize.X - 16)
-		local availableHeight = math.max(1, viewportSize.Y - 16)
-		local width = math.min(340, availableWidth)
-		local height = math.min(500, availableHeight)
-		return width, height
-	end
-
-	local panelW, panelH = getPanelSize(viewport)
+	local panelW = math.min(304, viewport.X - 20)
+	local panelH = math.min(430, viewport.Y - 24)
 	local HEADER_H, TABS_H, FOOTER_H = 54, 38, 58
 
 	local panel = new("Frame", {
@@ -6846,42 +6895,18 @@ function Mobile.create(dependencies)
 	stroke(launcher, Color3.new(1, 1, 1), 1, 0.8)
 	new("UIGradient", { Color = ColorSequence.new(C.Accent, C.AccentDark), Rotation = 45 }, launcher)
 
-	local function clampGuiPosition(guiObject, viewportSize)
-		local size = guiObject.AbsoluteSize
-		local pos = guiObject.AbsolutePosition
-		local maxX = math.max(0, viewportSize.X - size.X)
-		local maxY = math.max(0, viewportSize.Y - size.Y)
-		guiObject.Position = UDim2.fromOffset(
-			math.clamp(pos.X, 0, maxX),
-			math.clamp(pos.Y, 0, maxY)
-		)
-	end
-
-	local function applyViewportLayout()
-		if not alive or not screen.Parent then return end
-		local vp = screen.AbsoluteSize
-		if vp.X < 100 or vp.Y < 100 then return end
-
-		local width, height = getPanelSize(vp)
-		panel.Size = UDim2.fromOffset(width, height)
-		clampGuiPosition(panel, vp)
-
-		local launcherSize = launcher.AbsoluteSize
-		local launcherX = math.clamp(launcher.Position.X.Offset, 0, math.max(0, vp.X - launcherSize.X))
-		local launcherY = math.clamp(launcher.Position.Y.Offset, 0, math.max(0, vp.Y - launcherSize.Y))
-		launcher.Position = UDim2.fromOffset(launcherX, launcherY)
-	end
-
-	track(screen:GetPropertyChangedSignal("AbsoluteSize"):Connect(applyViewportLayout))
-	-- Apply once immediately; the first AbsoluteSize signal may have fired
-	-- before the listener was connected.
-	applyViewportLayout()
-
 	local function setPanelVisible(visible)
 		panel.Visible = visible
 		launcher.Visible = not visible
 		if visible then
-			clampGuiPosition(panel, screen.AbsoluteSize)
+			-- keep the panel on screen after the launcher moved
+			local vp = screen.AbsoluteSize
+			local size = panel.AbsoluteSize
+			local pos = panel.AbsolutePosition
+			panel.Position = UDim2.fromOffset(
+				math.clamp(pos.X, 0, math.max(0, vp.X - size.X)),
+				math.clamp(pos.Y, 0, math.max(0, vp.Y - size.Y))
+			)
 		end
 	end
 
@@ -6890,7 +6915,6 @@ function Mobile.create(dependencies)
 		local dragging, moved = false, false
 		local startPoint, startPosition
 		track(handle.InputBegan:Connect(function(input)
-			if not alive or not handle.Parent or not target.Parent then return end
 			local kind = input.UserInputType
 			if kind == Enum.UserInputType.Touch or kind == Enum.UserInputType.MouseButton1 then
 				dragging, moved = true, false
@@ -6899,7 +6923,7 @@ function Mobile.create(dependencies)
 			end
 		end))
 		track(UserInputService.InputChanged:Connect(function(input)
-			if not alive or not dragging or not startPoint or not startPosition then return end
+			if not dragging then return end
 			local kind = input.UserInputType
 			if kind ~= Enum.UserInputType.Touch and kind ~= Enum.UserInputType.MouseMovement then return end
 			local delta = input.Position - startPoint
@@ -6916,8 +6940,7 @@ function Mobile.create(dependencies)
 			if not dragging then return end
 			if kind == Enum.UserInputType.Touch or kind == Enum.UserInputType.MouseButton1 then
 				dragging = false
-				startPoint, startPosition = nil, nil
-				if alive and not moved and onTap then onTap() end
+				if not moved and onTap then onTap() end
 			end
 		end))
 	end
