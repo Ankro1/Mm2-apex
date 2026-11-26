@@ -1140,37 +1140,81 @@ function Esp.update(dependencies: EspUpdateDependencies)
 		dependencies.HideAll()
 		return
 	end
+
 	local roles = dependencies.Select(readOption("EspRoles", {}))
 	if next(roles) == nil then
 		-- filter value came back empty / in an unknown shape: that used to hide every player
 		roles = { Murderer = true, Sheriff = true, Hero = true, Innocent = true }
 	end
+
 	local shown = 0
 	local localRoot = dependencies.LocalParts()
+
 	for _, player: any in ipairs(dependencies.Players:GetPlayers() :: any) do
 		if player == dependencies.Player then continue end
+
 		local entry = esp.Entries[player]
-		local role = round.Role(player)
 		local character, root, humanoid = dependencies.CharacterParts(player)
-		if not role and character and root and (not humanoid or humanoid.Health > 0) then
-			role = Esp.guessRole(player, character)
+
+		-- لازم يكون فيه character + root
+		if not character or not root then
+			if entry then dependencies.Hide(entry) end
+			continue
 		end
-		if role and roles[role] and character and root then
+
+		local isAlive = not humanoid or humanoid.Health > 0
+		if not isAlive then
+			if entry then dependencies.Hide(entry) end
+			continue
+		end
+
+		-- نجيب الرول من الداتا الأول
+		local role = round.Role(player)
+
+		-- لو الداتا ضعيفة أو غلط، نعمل override من الـ tools (مهم جداً)
+		local guessed = Esp.guessRole(player, character)
+		if guessed == "Murderer" or guessed == "Sheriff" then
+			role = guessed
+		elseif not role then
+			role = guessed -- Innocent أو اللي طلع
+		end
+
+		-- Hero upgrade (لو معاه سلاح ومش Murderer)
+		if role == "Innocent" or role == "Sheriff" then
+			local backpack = player:FindFirstChildOfClass("Backpack")
+			if Inventory.findTool(character, "Weapon_Gun") or Inventory.findTool(backpack, "Weapon_Gun") then
+				-- لو الداتا قالت Sheriff بنسيبها، غير كده بنخليها Hero
+				if role ~= "Sheriff" then
+					role = "Hero"
+				end
+			end
+		end
+
+		if role and roles[role] then
 			if not entry then
 				local okCreate, created = pcall(dependencies.CreateEntry, player.Name)
 				if not okCreate then
-					if not esp.WarnedCreate then esp.WarnedCreate = true; warn("[Apex ESP] could not create entry: " .. tostring(created)) end
+					if not esp.WarnedCreate then
+						esp.WarnedCreate = true
+						warn("[Apex ESP] could not create entry: " .. tostring(created))
+					end
 					continue
 				end
 				entry = created
 				esp.Entries[player] = entry
 			end
+
 			local distance = if localRoot then dependencies.Floor((root.Position - localRoot.Position).Magnitude) else 0
 			entry.IsMurderer = (role == "Murderer")
+
 			local text = player.DisplayName .. " | " .. role
-			if readOption("EspDistance", true) then text ..= " | " .. tostring(distance) .. "m" end
+			if readOption("EspDistance", true) then
+				text ..= " | " .. tostring(distance) .. "m"
+			end
+
 			local head = character:FindFirstChild("Head") or root
 			local okEntry, entryError = pcall(dependencies.UpdateEntry, entry, character, head, esp.Color(role), text)
+
 			if okEntry then
 				shown += 1
 			elseif not esp.WarnedUpdate then
@@ -1181,6 +1225,8 @@ function Esp.update(dependencies: EspUpdateDependencies)
 			if entry then dependencies.Hide(entry) end
 		end
 	end
+
+	-- تنضيف اللاعبين اللي سابوا السيرفر
 	for player: any, entry in pairs(esp.Entries) do
 		if dependencies.TypeOf(player) == "Instance" and player.Parent ~= dependencies.Players then
 			dependencies.DestroyEntry(entry)
@@ -1188,20 +1234,30 @@ function Esp.update(dependencies: EspUpdateDependencies)
 		end
 	end
 
+	-- تشخيص لو مفيش حاجة ظاهرة
 	if shown == 0 and #dependencies.Players:GetPlayers() > 1 and os.clock() - (esp.LastDiag or 0) > 6 then
 		esp.LastDiag = os.clock()
 		local rolesKnown, mapLoaded = 0, false
-		pcall(function() for _ in pairs(round.Data()) do rolesKnown += 1 end end)
-		pcall(function() mapLoaded = round.Map() ~= nil end)
-		local report = string.format("ESP: nothing drawn | role entries: %d | map: %s", rolesKnown, tostring(mapLoaded))
+		pcall(function()
+			for _ in pairs(round.Data()) do rolesKnown += 1 end
+		end)
+		pcall(function()
+			mapLoaded = round.Map() ~= nil
+		end)
+		local report = string.format("ESP: nothing drawn | role entries: %d | map: %s | players alive: %d", rolesKnown, tostring(mapLoaded), #dependencies.Players:GetPlayers() - 1)
 		warn("[Apex] " .. report)
 		if esp.Notify then pcall(esp.Notify, report) end
 	end
 
+	-- Dropped Gun
 	local gun = if readOption("EspGun", true) then round.GunDrop() else nil
 	if gun then
 		esp.GunEntry = esp.GunEntry or dependencies.CreateEntry("GunDrop")
-		local distance = if localRoot and dependencies.ObjectPosition(gun) then dependencies.Floor((dependencies.ObjectPosition(gun) - localRoot.Position).Magnitude) else 0
+		local distance = if localRoot and dependencies.ObjectPosition(gun) then
+			dependencies.Floor((dependencies.ObjectPosition(gun) - localRoot.Position).Magnitude)
+		else
+			0
+		end
 		local entry = esp.GunEntry
 		local part = if gun:IsA("BasePart") then gun else gun:FindFirstChildWhichIsA("BasePart", true)
 		dependencies.UpdateEntry(entry, gun, part, esp.Color("Hero"), "Dropped Gun | " .. tostring(distance) .. "m")
@@ -1623,7 +1679,7 @@ export type CombatStepDependencies = {
 
 
 function Combat.flingTarget(combat, player, power)
-	power = math.clamp(tonumber(power) or 180, 40, 600)
+	power = math.clamp(tonumber(power) or 180, 40, 800)
 	if not player then
 		return false, "No target"
 	end
@@ -1631,6 +1687,7 @@ function Combat.flingTarget(combat, player, power)
 	if player == localPlayer then
 		return false, "Can't fling yourself"
 	end
+
 	local character = player.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart")
 	local targetHumanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -1659,7 +1716,7 @@ function Combat.flingTarget(combat, player, power)
 		local runService = game:GetService("RunService")
 		local myCharacter = localRoot.Parent
 		local saved = localRoot.CFrame
-		local force = power * 2500
+		local humanoid = myCharacter and myCharacter:FindFirstChildOfClass("Humanoid")
 
 		combat.Flinging = true
 		if combat.Mover then
@@ -1668,7 +1725,17 @@ function Combat.flingTarget(combat, player, power)
 			if combat.Mover.Conn then pcall(combat.Mover.Stop) end
 		end
 
-		-- own body movers (fly) fight the velocity we set: neutralise them for the duration
+		-- disable states that fight physics
+		local oldPlatformStand = false
+		if humanoid then
+			oldPlatformStand = humanoid.PlatformStand
+			pcall(function()
+				humanoid.PlatformStand = true
+				humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+			end)
+		end
+
+		-- neutralise own body movers (fly etc.)
 		local neutralised = {}
 		for _, child in ipairs(localRoot:GetChildren()) do
 			if child:IsA("BodyVelocity") then
@@ -1677,47 +1744,101 @@ function Combat.flingTarget(combat, player, power)
 			elseif child:IsA("BodyGyro") then
 				neutralised[child] = { "MaxTorque", child.MaxTorque }
 				child.MaxTorque = Vector3.zero
+			elseif child:IsA("BodyAngularVelocity") then
+				neutralised[child] = { "MaxTorque", child.MaxTorque }
+				child.MaxTorque = Vector3.zero
+			elseif child:IsA("LinearVelocity") or child:IsA("AngularVelocity") or child:IsA("AlignPosition") or child:IsA("AlignOrientation") then
+				neutralised[child] = { "Enabled", child.Enabled }
+				child.Enabled = false
 			end
 		end
 
-		-- heavy body + colliding root: the part that actually transfers momentum
+		-- make local character very dense + fully collidable so momentum transfers hard
 		local physical = {}
 		for _, part in ipairs(myCharacter:GetDescendants()) do
 			if part:IsA("BasePart") then
-				physical[part] = part.CustomPhysicalProperties
-				part.CustomPhysicalProperties = PhysicalProperties.new(100, 0.3, 0.5)
+				physical[part] = {
+					CustomPhysicalProperties = part.CustomPhysicalProperties,
+					CanCollide = part.CanCollide,
+					Massless = part.Massless,
+				}
+				part.CustomPhysicalProperties = PhysicalProperties.new(100, 0.3, 0.5, 1, 1)
+				part.CanCollide = true
+				part.Massless = false
 			end
 		end
 		localRoot.CanCollide = true
 
+		local force = power * 3200
 		local started = os.clock()
+		local duration = 1.65
 		local success, failure = pcall(function()
-			while os.clock() - started < 1.2 do
+			while os.clock() - started < duration do
 				if not root.Parent or not localRoot.Parent then break end
 				if targetHumanoid.Health <= 0 then break end
-				if root.AssemblyLinearVelocity.Magnitude > 600 then break end -- already launched
-				local lead = root.CFrame + root.AssemblyLinearVelocity * 0.1
-				localRoot.CFrame = lead * CFrame.new(0, 0, (math.random() - 0.5) * 2)
-				localRoot.AssemblyLinearVelocity = Vector3.new(force, force, force)
-				localRoot.AssemblyAngularVelocity = Vector3.new(force, force, force)
+				if root.AssemblyLinearVelocity.Magnitude > 900 then break end -- already launched hard
+
+				-- predict a bit ahead of the target
+				local vel = root.AssemblyLinearVelocity
+				local lead = root.CFrame + (vel * 0.08)
+
+				-- stay glued very close and spin randomly (this is what actually flings)
+				local offset = CFrame.new(
+					(math.random() - 0.5) * 1.4,
+					(math.random() - 0.5) * 1.1,
+					(math.random() - 0.5) * 1.4
+				)
+				localRoot.CFrame = lead * offset
+
+				-- apply massive random velocity + spin every frame
+				local dir = Vector3.new(
+					(math.random() - 0.5) * 2,
+					(math.random() - 0.3) * 2,
+					(math.random() - 0.5) * 2
+				).Unit
+
+				localRoot.AssemblyLinearVelocity = dir * force
+				localRoot.AssemblyAngularVelocity = Vector3.new(
+					(math.random() - 0.5) * force * 0.9,
+					(math.random() - 0.5) * force * 0.9,
+					(math.random() - 0.5) * force * 0.9
+				)
+
 				runService.Heartbeat:Wait()
 			end
 		end)
 
-		for part, properties in pairs(physical) do
-			if part.Parent then part.CustomPhysicalProperties = properties end
+		-- restore physical properties
+		for part, data in pairs(physical) do
+			if part.Parent then
+				pcall(function()
+					part.CustomPhysicalProperties = data.CustomPhysicalProperties
+					part.CanCollide = data.CanCollide
+					part.Massless = data.Massless
+				end)
+			end
 		end
 		for object, data in pairs(neutralised) do
-			if object.Parent then object[data[1]] = data[2] end
+			if object.Parent then
+				pcall(function() object[data[1]] = data[2] end)
+			end
 		end
-		-- bleed the leftover velocity off before handing control back
-		for _ = 1, 4 do
+
+		-- kill leftover velocity and put us back
+		for _ = 1, 6 do
 			if localRoot.Parent then
 				localRoot.AssemblyLinearVelocity = Vector3.zero
 				localRoot.AssemblyAngularVelocity = Vector3.zero
 				localRoot.CFrame = saved
 			end
 			runService.Heartbeat:Wait()
+		end
+
+		if humanoid then
+			pcall(function()
+				humanoid.PlatformStand = oldPlatformStand
+				humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+			end)
 		end
 
 		combat.Flinging = false
@@ -3551,11 +3672,16 @@ function Combat.create(dependencies: CombatDependencies): any
 		return combat.Fling(s, power)
 	end
 	function combat.FlingAll(power)
-		for _, t in ipairs(combat.Targets()) do
+		local targets = combat.Targets()
+		for i, t in ipairs(targets) do
+			if not t.Player or not t.Player.Parent then continue end
 			pcall(function()
 				combat.Fling(t.Player, power or 180)
 			end)
-			task.wait(0.12)
+			-- wait enough for the previous fling to finish before starting the next
+			if i < #targets then
+				task.wait(1.9)
+			end
 		end
 		return true
 	end
