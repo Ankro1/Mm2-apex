@@ -444,7 +444,7 @@ function Application.createEnvironment(host: any, uiSource: string?): (any, any)
 		RaycastParams OverlapParams Axes Faces DateTime Random PathWaypoint Content
 		Drawing gethui protectgui firetouchinterest fireclickdetector fireproximityprompt
 		sethiddenproperty gethiddenproperty setclipboard toclipboard setfpscap getfpscap
-		isnetworkowner getconnections getgc getrawmetatable setrawmetatable setreadonly
+		isnetworkowner getconnections firesignal getgc getrawmetatable setrawmetatable setreadonly
 		isreadonly checkcaller getnamecallmethod newcclosure iscclosure islclosure hookfunction hookmetamethod
 		restorefunction mouse1press mouse1release mouse1click mouse2press mouse2release
 		mouse2click mousemoverel mousemoveabs keypress keyrelease setthreadidentity
@@ -847,7 +847,7 @@ function Esp.updateEntry(readNumber: (string, number) -> any, readOption: (strin
 	entry.Highlight.OutlineColor = color
 	entry.Highlight.FillTransparency = transparency
 	local highlight = entry.Highlight
-	highlight.Enabled = readOption("EspHighlight", true)
+	highlight.Enabled = (not entry.NoHighlight) and readOption("EspHighlight", true)
 	entry.Billboard.Adornee = head
 	entry.Label.Text = text
 	entry.Label.TextColor3 = color
@@ -1034,6 +1034,7 @@ function Esp.updateWorldObjects(esp, dependencies)
 		end
 	end)
 
+	-- coins: label only, no Highlight (Roblox renders max 31 Highlights, coins would starve the players)
 	if readOption("EspCoins", false) then
 		esp.CoinEntries = esp.CoinEntries or {}
 		local container = map:FindFirstChild("CoinContainer")
@@ -1048,7 +1049,8 @@ function Esp.updateWorldObjects(esp, dependencies)
 					seen[coin] = true
 					local entry = esp.CoinEntries[coin]
 					if not entry then
-						entry = dependencies.CreateEntry("Coin_" .. tostring(coin))
+						entry = dependencies.CreateEntry("Coin")
+						entry.NoHighlight = true
 						esp.CoinEntries[coin] = entry
 					end
 					pcall(function()
@@ -1059,48 +1061,63 @@ function Esp.updateWorldObjects(esp, dependencies)
 		end
 		for coin, entry in pairs(esp.CoinEntries) do
 			if not seen[coin] then
-				Esp.hide(entry)
+				Esp.destroyEntry(entry)
+				esp.CoinEntries[coin] = nil
 			end
 		end
-	elseif esp.CoinEntries then
-		for _, entry in pairs(esp.CoinEntries) do
-			Esp.hide(entry)
+	elseif esp.CoinEntries and next(esp.CoinEntries) ~= nil then
+		for coin, entry in pairs(esp.CoinEntries) do
+			Esp.destroyEntry(entry)
+			esp.CoinEntries[coin] = nil
 		end
 	end
 
 	if readOption("EspTraps", false) then
 		esp.TrapEntries = esp.TrapEntries or {}
-		local seen = {}
-		for _, desc in ipairs(map:GetDescendants()) do
-			local name = string.lower(tostring(desc.Name))
-			if string.find(name, "trap", 1, true) or string.find(name, "bear", 1, true) then
-				if desc:IsA("BasePart") or desc:IsA("Model") then
-					local part = desc
-					if not desc:IsA("BasePart") then
-						part = desc:FindFirstChildWhichIsA("BasePart", true)
-					end
-					if part then
-						seen[desc] = true
-						local entry = esp.TrapEntries[desc]
-						if not entry then
-							entry = dependencies.CreateEntry("Trap_" .. tostring(desc))
-							esp.TrapEntries[desc] = entry
+		local now = os.clock()
+		-- GetDescendants on the whole map is heavy: rescan once per second, not every tick
+		if esp.TrapMap ~= map or now >= (esp.NextTrapScan or 0) then
+			esp.TrapMap = map
+			esp.NextTrapScan = now + 1
+			local found = {}
+			for _, desc in ipairs(map:GetDescendants()) do
+				local lowered = string.lower(tostring(desc.Name))
+				if string.find(lowered, "trap", 1, true) or string.find(lowered, "bear", 1, true) then
+					if desc:IsA("BasePart") or desc:IsA("Model") then
+						local part = desc
+						if not desc:IsA("BasePart") then
+							part = desc:FindFirstChildWhichIsA("BasePart", true)
 						end
-						pcall(function()
-							dependencies.UpdateEntry(entry, desc, part, trapColor, "Trap")
-						end)
+						if part then found[desc] = part end
 					end
 				end
 			end
+			esp.TrapFound = found
 		end
-		for obj, entry in pairs(esp.TrapEntries) do
-			if not seen[obj] then
-				Esp.hide(entry)
+		local seen = esp.TrapFound or {}
+		for desc, part in pairs(seen) do
+			if desc.Parent then
+				local entry = esp.TrapEntries[desc]
+				if not entry then
+					entry = dependencies.CreateEntry("Trap")
+					entry.NoHighlight = true
+					esp.TrapEntries[desc] = entry
+				end
+				pcall(function()
+					dependencies.UpdateEntry(entry, desc, part, trapColor, "Trap")
+				end)
 			end
 		end
-	elseif esp.TrapEntries then
-		for _, entry in pairs(esp.TrapEntries) do
-			Esp.hide(entry)
+		for obj, entry in pairs(esp.TrapEntries) do
+			if not seen[obj] or not obj.Parent then
+				Esp.destroyEntry(entry)
+				esp.TrapEntries[obj] = nil
+			end
+		end
+	elseif esp.TrapEntries and next(esp.TrapEntries) ~= nil then
+		for obj, entry in pairs(esp.TrapEntries) do
+			Esp.destroyEntry(entry)
+			esp.TrapEntries[obj] = nil
 		end
 	end
 end
@@ -1113,27 +1130,20 @@ function Esp.update(dependencies: EspUpdateDependencies)
 		return
 	end
 	local roles = dependencies.Select(readOption("EspRoles", {}))
-	-- if user left the multi-select empty, treat every known role as enabled
-	local anyRole = next(roles) ~= nil
 	local localRoot = dependencies.LocalParts()
 	for _, player: any in ipairs(dependencies.Players:GetPlayers() :: any) do
 		if player == dependencies.Player then continue end
 		local entry = esp.Entries[player]
 		local role = round.Role(player)
-		-- fallback when PlayerData has not arrived yet
-		if not role then
-			role = "Innocent"
-		end
 		local character, root = dependencies.CharacterParts(player)
-		local allowed = (not anyRole) or roles[role] or roles["Innocent"]
-		if allowed and character and root then
+		if role and roles[role] and character and root then
 			if not entry then
 				entry = dependencies.CreateEntry(player.Name)
 				esp.Entries[player] = entry
 			end
 			local distance = if localRoot then dependencies.Floor((root.Position - localRoot.Position).Magnitude) else 0
 			entry.IsMurderer = (role == "Murderer")
-			local text = player.DisplayName .. " | " .. tostring(role)
+			local text = player.DisplayName .. " | " .. role
 			if readOption("EspDistance", true) then text ..= " | " .. tostring(distance) .. "m" end
 			local head = character:FindFirstChild("Head") or root
 			dependencies.UpdateEntry(entry, character, head, esp.Color(role), text)
@@ -1573,14 +1583,19 @@ export type CombatStepDependencies = {
 
 
 function Combat.flingTarget(combat, player, power)
-	power = tonumber(power) or 180
+	power = math.clamp(tonumber(power) or 180, 40, 600)
 	if not player then
 		return false, "No target"
 	end
+	local localPlayer = game:GetService("Players").LocalPlayer
+	if player == localPlayer then
+		return false, "Can't fling yourself"
+	end
 	local character = player.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart")
-	if not root then
-		return false, "No target root"
+	local targetHumanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if not root or not targetHumanoid or targetHumanoid.Health <= 0 then
+		return false, "Target is not alive"
 	end
 
 	local localRoot = nil
@@ -1588,103 +1603,113 @@ function Combat.flingTarget(combat, player, power)
 		localRoot = combat.LocalParts()
 	end
 	if not localRoot then
-		local lp = game:GetService("Players").LocalPlayer
-		localRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+		localRoot = localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart")
 	end
 	if not localRoot then
 		return false, "No local character"
 	end
+	if type(combat.Run) ~= "function" then
+		return false, "Combat runner missing"
+	end
+	if combat.Busy then
+		return false, "Another action is running"
+	end
 
-	-- Prefer combat.Run when available (handles Busy + mover restore),
-	-- but fall back to a direct self-contained fling if Run is missing.
-	local function doFling()
+	local ok = combat.Run(function()
+		local runService = game:GetService("RunService")
+		local myCharacter = localRoot.Parent
 		local saved = localRoot.CFrame
-		local savedCollide = {}
+		local force = power * 2500
 
-		for _, part in ipairs(localRoot.Parent:GetDescendants()) do
+		combat.Flinging = true
+		if combat.Mover then
+			combat.Mover.Flinging = true
+			-- farm / other holders rewrite the CFrame every Heartbeat and would kill the fling
+			if combat.Mover.Conn then pcall(combat.Mover.Stop) end
+		end
+
+		-- own body movers (fly) fight the velocity we set: neutralise them for the duration
+		local neutralised = {}
+		for _, child in ipairs(localRoot:GetChildren()) do
+			if child:IsA("BodyVelocity") then
+				neutralised[child] = { "MaxForce", child.MaxForce }
+				child.MaxForce = Vector3.zero
+			elseif child:IsA("BodyGyro") then
+				neutralised[child] = { "MaxTorque", child.MaxTorque }
+				child.MaxTorque = Vector3.zero
+			end
+		end
+
+		-- heavy body + colliding root: the part that actually transfers momentum
+		local physical = {}
+		for _, part in ipairs(myCharacter:GetDescendants()) do
 			if part:IsA("BasePart") then
-				savedCollide[part] = part.CanCollide
-				part.CanCollide = false
+				physical[part] = part.CustomPhysicalProperties
+				part.CustomPhysicalProperties = PhysicalProperties.new(100, 0.3, 0.5)
 			end
 		end
+		localRoot.CanCollide = true
 
-		-- Strong angular + linear force
-		local bav = Instance.new("BodyAngularVelocity")
-		bav.Name = "ApexFling"
-		bav.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-		bav.P = 999999
-		bav.AngularVelocity = Vector3.new(power * 2, power * 2, power * 2)
-		bav.Parent = localRoot
-
-		local bv = Instance.new("BodyVelocity")
-		bv.Name = "ApexFlingV"
-		bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-		bv.P = 999999
-		bv.Velocity = Vector3.new(0, power * 0.6, 0)
-		bv.Parent = localRoot
-
-		-- Aggressive collision frames
-		for i = 1, 28 do
-			if not root.Parent or not localRoot.Parent then
-				break
+		local started = os.clock()
+		local success, failure = pcall(function()
+			while os.clock() - started < 1.2 do
+				if not root.Parent or not localRoot.Parent then break end
+				if targetHumanoid.Health <= 0 then break end
+				if root.AssemblyLinearVelocity.Magnitude > 600 then break end -- already launched
+				local lead = root.CFrame + root.AssemblyLinearVelocity * 0.1
+				localRoot.CFrame = lead * CFrame.new(0, 0, (math.random() - 0.5) * 2)
+				localRoot.AssemblyLinearVelocity = Vector3.new(force, force, force)
+				localRoot.AssemblyAngularVelocity = Vector3.new(force, force, force)
+				runService.Heartbeat:Wait()
 			end
-			-- stick to target then push hard
-			localRoot.CFrame = root.CFrame * CFrame.new(0, 0, -0.5)
-			localRoot.AssemblyLinearVelocity = Vector3.new(
-				math.random(-power * 1.4, power * 1.4),
-				power * 1.1,
-				math.random(-power * 1.4, power * 1.4)
-			)
-			localRoot.AssemblyAngularVelocity = Vector3.new(power * 2, power * 2, power * 2)
-			task.wait()
+		end)
+
+		for part, properties in pairs(physical) do
+			if part.Parent then part.CustomPhysicalProperties = properties end
 		end
-
-		if bav.Parent then bav:Destroy() end
-		if bv.Parent then bv:Destroy() end
-
-		for part, can in pairs(savedCollide) do
-			if part.Parent then
-				part.CanCollide = can
+		for object, data in pairs(neutralised) do
+			if object.Parent then object[data[1]] = data[2] end
+		end
+		-- bleed the leftover velocity off before handing control back
+		for _ = 1, 4 do
+			if localRoot.Parent then
+				localRoot.AssemblyLinearVelocity = Vector3.zero
+				localRoot.AssemblyAngularVelocity = Vector3.zero
+				localRoot.CFrame = saved
 			end
+			runService.Heartbeat:Wait()
 		end
 
-		if localRoot.Parent then
-			localRoot.CFrame = saved
-			localRoot.AssemblyLinearVelocity = Vector3.zero
-			localRoot.AssemblyAngularVelocity = Vector3.zero
-		end
-		return true
-	end
+		combat.Flinging = false
+		if combat.Mover then combat.Mover.Flinging = false end
+		if not success then error(failure, 0) end
+	end)
 
-	if type(combat.Run) == "function" then
-		local ok = combat.Run(doFling)
-		return ok, (not ok) and "Fling interrupted" or nil
-	end
-
-	local ok, err = pcall(doFling)
-	if not ok then
-		return false, tostring(err)
-	end
-	return true
+	combat.Flinging = false
+	if combat.Mover then combat.Mover.Flinging = false end
+	if ok then return true end
+	return false, "Fling errored (see log)"
 end
 
-
-local _apexHitboxOriginal = {}
 
 function Combat.hitboxExpand(combat, size)
 	size = tonumber(size) or 6
 	if type(combat.Targets) ~= "function" then
 		return
 	end
+	combat.HitboxSaved = combat.HitboxSaved or setmetatable({}, { __mode = "k" })
+	combat.HitboxActive = true
 	for _, target in ipairs(combat.Targets()) do
 		local character = target.Player and target.Player.Character
 		if character then
 			local root = character:FindFirstChild("HumanoidRootPart")
 			if root and root:IsA("BasePart") then
-				if not _apexHitboxOriginal[root] then
-					_apexHitboxOriginal[root] = { Size = root.Size, Transparency = root.Transparency, CanCollide = root.CanCollide }
-				end
 				pcall(function()
+					if not combat.HitboxSaved[root] then
+						combat.HitboxSaved[root] = {
+							Size = root.Size, Transparency = root.Transparency, CanCollide = root.CanCollide,
+						}
+					end
 					root.Size = Vector3.new(size, size, size)
 					root.Transparency = 0.65
 					root.CanCollide = false
@@ -1694,17 +1719,22 @@ function Combat.hitboxExpand(combat, size)
 	end
 end
 
-function Combat.restoreHitboxes()
-	for root, data in pairs(_apexHitboxOriginal) do
-		if root and root.Parent then
+function Combat.hitboxRestore(combat)
+	if not combat.HitboxSaved then
+		combat.HitboxActive = false
+		return
+	end
+	for root, original in pairs(combat.HitboxSaved) do
+		if root.Parent then
 			pcall(function()
-				root.Size = data.Size
-				root.Transparency = data.Transparency
-				root.CanCollide = data.CanCollide
+				root.Size = original.Size
+				root.Transparency = original.Transparency
+				root.CanCollide = original.CanCollide
 			end)
 		end
 	end
-	table.clear(_apexHitboxOriginal)
+	table.clear(combat.HitboxSaved)
+	combat.HitboxActive = false
 end
 
 
@@ -1775,6 +1805,9 @@ function Combat.step(dependencies: CombatStepDependencies)
 		local wantsShoot = quest.Wants("Shoot") or quest.Wants("Zombies")
 		if (readOption("AutoShoot", false) or wantsShoot) and ready("autoshoot", readNumber("ShootCooldown", 15) / 10) then
 			combat.ShootMurderer(readOption("ShootTeleport", false) or wantsShoot)
+		else
+			-- was unreachable before: the branch returned above and the old call required a gun again
+			Combat.triggerbotStep(combat, round, readOption, ready)
 		end
 		return
 	end
@@ -1790,11 +1823,6 @@ function Combat.step(dependencies: CombatStepDependencies)
 				combat.PendingReturn = true
 			end
 		end
-	end
-
-	-- Triggerbot
-	if round.Tool(dependencies.Player, "Weapon_Gun") then
-		Combat.triggerbotStep(combat, round, readOption, ready)
 	end
 
 	-- Auto Return after gun
@@ -2520,7 +2548,7 @@ function Lifecycle.panic(dependencies)
 		"AutoGrabGun", "EspOn", "Fly", "Noclip", "SpeedOn", "JumpOn",
 		"InfJump", "Godmode", "Invisibility", "AutoEvade", "Triggerbot",
 		"HitboxExpand", "KnifeSilentAim", "GunSilentAim", "EspCoins", "EspTraps",
-		"EspTracers", "AntiFling",
+		"EspTracers", "AntiFling", "ClickTp",
 	}
 	for _, name in ipairs(kills) do
 		local opt = options and options[name]
@@ -2528,6 +2556,7 @@ function Lifecycle.panic(dependencies)
 			pcall(function() opt:SetValue(false) end)
 		end
 	end
+	if dependencies.Combat and dependencies.Combat.HitboxRestore then pcall(dependencies.Combat.HitboxRestore) end
 	if dependencies.Mover then pcall(function() dependencies.Mover.Stop() end) end
 	if dependencies.Farm and dependencies.Farm.Surface then pcall(function() dependencies.Farm.Surface() end) end
 	if dependencies.Movement then
@@ -2541,11 +2570,6 @@ function Lifecycle.panic(dependencies)
 			end
 		end
 	end
-	pcall(function()
-		if Combat and Combat.restoreHitboxes then
-			Combat.restoreHitboxes()
-		end
-	end)
 	if dependencies.Notify then
 		dependencies.Notify("Panic activated — all features off")
 	end
@@ -2602,7 +2626,7 @@ end
 
 function Application.cleanCoreGui(coreGui: any)
 	for _, child: any in ipairs(coreGui:GetChildren()) do
-		if child:IsA("ScreenGui") and (child.Name == "ApexHub" or child.Name == "ApexMM2Visuals") then
+		if child.Name == "ApexHub" or child.Name == "ApexMM2Visuals" then
 			pcall(function() child:Destroy() end)
 		end
 	end
@@ -3402,7 +3426,7 @@ export type CombatDependencies = {
 }
 
 function Combat.create(dependencies: CombatDependencies): any
-	local combat: any = { Busy = false, LastThrow = 0 }
+	local combat: any = { Busy = false, LastThrow = 0, Mover = dependencies.Mover }
 	local equip = {
 		Round = dependencies.Round, Player = dependencies.Player, CharacterParts = dependencies.CharacterParts,
 		Clock = dependencies.Clock, Wait = dependencies.Wait,
@@ -3495,8 +3519,12 @@ function Combat.create(dependencies: CombatDependencies): any
 		end
 		return true
 	end
+
 	function combat.HitboxExpand(size)
 		Combat.hitboxExpand(combat, size or 6)
+	end
+	function combat.HitboxRestore()
+		Combat.hitboxRestore(combat)
 	end
 	function combat.DoReturn()
 		combat.PendingReturn = false
@@ -3550,7 +3578,28 @@ function Round.data(state: { PlayerData: unknown }?): { [string]: unknown }
 end
 
 function Round.info(round: { Data: () -> { [string]: unknown } }, player: RoundPlayer?): unknown
-	return player and round.Data()[player.Name]
+	if not player then return nil end
+	local data = round.Data()
+	local info = data[player.Name]
+	if info then return info end
+
+	-- PlayerData missing (module path changed / not loaded yet): derive the role from tools
+	-- while a map is loaded, so ESP, fling targeting and kill logic keep working.
+	if next(data) == nil and round.Map() then
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			local backpack = player:FindFirstChildOfClass("Backpack")
+			local role = "Innocent"
+			if Inventory.findTool(character, "Weapon_Knife") or Inventory.findTool(backpack, "Weapon_Knife") then
+				role = "Murderer"
+			elseif Inventory.findTool(character, "Weapon_Gun") or Inventory.findTool(backpack, "Weapon_Gun") then
+				role = "Sheriff"
+			end
+			return { Role = role, Dead = humanoid.Health <= 0, Fallback = true }
+		end
+	end
+	return nil
 end
 
 function Round.role(round: RoleRound, player: unknown): unknown
@@ -3752,7 +3801,7 @@ function Inventory.findTool(container: ToolContainer?, tag: string): Tool?
 	if not container then return nil end
 
 	for _, tool in ipairs(container:GetChildren()) do
-		if tool:IsA("Tool") and tool:HasTag(tag) then
+		if tool:IsA("Tool") and (tool:HasTag(tag) or (tag == "Weapon_Gun" and tool.Name == "Gun") or (tag == "Weapon_Knife" and tool.Name == "Knife")) then
 			return tool
 		end
 	end
@@ -3797,7 +3846,7 @@ function Farm.create(dependencies: FarmDependencies): FarmController
 		NewFrame = dependencies.NewFrameAt,
 	}
 	local exposure: ExposureDependencies = {
-		Cache = {}, Players = dependencies.Players, Parameters = dependencies.Parameters,
+		Cache = setmetatable({}, { __mode = "k" }), Players = dependencies.Players, Parameters = dependencies.Parameters,
 		Farm = farm :: { Hidden: (Vector) -> Frame }, Workspace = dependencies.Workspace,
 		RayDirection = dependencies.RayDirection,
 	}
@@ -4427,15 +4476,6 @@ function Movement.applyGodmode(player, enabled)
 		pcall(function()
 			humanoid.MaxHealth = math.huge
 			humanoid.Health = math.huge
-			humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
-			humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-		end)
-	else
-		pcall(function()
-			humanoid.MaxHealth = 100
-			if humanoid.Health > 100 then humanoid.Health = 100 end
-			humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
-			humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
 		end)
 	end
 end
@@ -4457,9 +4497,19 @@ function Movement.antiFlingTick(player)
 	if not character then return end
 	local root = character:FindFirstChild("HumanoidRootPart")
 	if not root then return end
-	if root.AssemblyLinearVelocity.Magnitude > 120 or root.AssemblyAngularVelocity.Magnitude > 40 then
+	if root.AssemblyLinearVelocity.Magnitude > 250 or root.AssemblyAngularVelocity.Magnitude > 60 then
 		root.AssemblyLinearVelocity = Vector3.zero
 		root.AssemblyAngularVelocity = Vector3.zero
+	end
+	-- the actual cause of a fling is a collision with someone else's body: make them intangible to us
+	for _, other in ipairs(game:GetService("Players"):GetPlayers()) do
+		if other ~= player and other.Character then
+			for _, part in ipairs(other.Character:GetChildren()) do
+				if part:IsA("BasePart") and part.CanCollide then
+					part.CanCollide = false
+				end
+			end
+		end
 	end
 end
 
@@ -4701,7 +4751,9 @@ function Movement.createCharacter(dependencies: CharacterMovementDependencies): 
 		end)
 	end
 
+
 	return movement, function()
+		if dependencies.Mover and dependencies.Mover.Flinging then return end
 		Movement.updateCharacter(dependencies.LocalParts, dependencies.ReadOption, dependencies.ReadNumber, movement)
 	end
 end
@@ -5644,6 +5696,9 @@ export type CombatInterfaceDependencies = {
 
 function Interface.combatCallbacks(dependencies: CombatInterfaceDependencies): { [string]: () -> () }
 	local round, combat = dependencies.Round, dependencies.Combat
+	local function flingPower()
+		return tonumber(dependencies.ReadOption and dependencies.ReadOption("FlingPower", 180)) or 180
+	end
 
 	return {
 		["Kill Everyone"] = function()
@@ -5674,7 +5729,7 @@ function Interface.combatCallbacks(dependencies: CombatInterfaceDependencies): {
 					dependencies.ShowMessage("Fling not available")
 					return
 				end
-				local ok, err = combat.FlingMurderer(180)
+				local ok, err = combat.FlingMurderer(flingPower())
 				dependencies.ShowResult(ok, err or "Fling failed", "Fling sent")
 			end)
 		end,
@@ -5689,7 +5744,7 @@ function Interface.combatCallbacks(dependencies: CombatInterfaceDependencies): {
 					dependencies.ShowMessage("Fling not available")
 					return
 				end
-				local ok, err = combat.Fling(sheriff, 180)
+				local ok, err = combat.Fling(sheriff, flingPower())
 				dependencies.ShowResult(ok, err or "Fling failed", "Fling sent")
 			end)
 		end,
@@ -5699,7 +5754,7 @@ function Interface.combatCallbacks(dependencies: CombatInterfaceDependencies): {
 					dependencies.ShowMessage("Fling not available")
 					return
 				end
-				combat.FlingAll(180)
+				combat.FlingAll(flingPower())
 				dependencies.ShowMessage("Fling all sent")
 			end)
 		end,
@@ -5719,7 +5774,7 @@ function Interface.combatCallbacks(dependencies: CombatInterfaceDependencies): {
 					dependencies.ShowMessage("Fling not available")
 					return
 				end
-				local ok, err = combat.Fling(target, 180)
+				local ok, err = combat.Fling(target, flingPower())
 				dependencies.ShowResult(ok, err or "Fling failed", "Fling sent")
 			end)
 		end,
@@ -6307,6 +6362,7 @@ function Application.createInterface(dependencies: any): any
 					Mover = dependencies.Mover,
 					Farm = dependencies.Farm,
 					Movement = dependencies.Movement,
+					Combat = dependencies.Combat,
 					Player = dependencies.Player,
 					Notify = notify,
 				})
@@ -6450,7 +6506,7 @@ function Application.runRuntime(dependencies: any)
 		RemoveEsp = esp.Remove,
 		HasDrawing = esp.HasDrawing,
 		Tracers = esp.Tracers,
-		NoclipFrame = function() Movement.noclipFrame(readOption, movement) end,
+		NoclipFrame = function() if not combat.Flinging then Movement.noclipFrame(readOption, movement) end end,
 		JumpRequest = function() Movement.jumpRequest(readOption, localParts, dependencies.Jumping) end,
 		InputBegan = function(input, processed)
 			Movement.clickTeleport({
@@ -6481,6 +6537,9 @@ function Application.start(host: any, uiSource: string?, loadLibrary: ((any) -> 
 	local environment, diagnostics = Application.createEnvironment(host, uiSource)
 	local gameObject = environment.game
 	local function service(name: string) return environment.cloneref(gameObject:GetService(name)) end
+	-- the sandbox environment is rebuilt on every execution, so the previous run lives in the REAL genv
+	local realEnv: any = if type(host.getgenv) == "function" then (host.getgenv :: any)() else host
+	pcall(Lifecycle.resetPrevious, realEnv)
 	Lifecycle.resetPrevious(environment)
 	local coreGui = service("CoreGui")
 	Application.cleanCoreGui(coreGui)
@@ -6497,6 +6556,7 @@ function Application.start(host: any, uiSource: string?, loadLibrary: ((any) -> 
 	local virtualUser = service("VirtualUser")
 	local http = service("HttpService")
 	local state, session = Lifecycle.initializeSession(environment, http)
+	pcall(function() realEnv.ApexHub = state end)
 	local clock, wait = environment.os.clock, environment.task.wait
 	local function isRunning() return Lifecycle.isRunning(state, environment.getgenv, session) end
 	local function log(message: any) Lifecycle.log(state, environment.os.date, message) end
@@ -6580,6 +6640,7 @@ function Application.start(host: any, uiSource: string?, loadLibrary: ((any) -> 
 	end
 	local mobileHandle: any
 	local function unload()
+		pcall(function() controllers.Combat.HitboxRestore() end)
 		if mobileHandle then
 			pcall(mobileHandle.Destroy)
 			mobileHandle = nil
@@ -6623,12 +6684,14 @@ function Application.start(host: any, uiSource: string?, loadLibrary: ((any) -> 
 	interface.Window:SelectTab(1)
 
 	-- Panic helper
+
 	local function panic()
 		Lifecycle.panic({
 			Options = options,
 			Mover = automation and automation.Mover,
 			Farm = automation and automation.Farm,
 			Movement = controllers and controllers.Movement,
+			Combat = controllers and controllers.Combat,
 			Player = player,
 			Notify = function(msg) Interface.notify(library, msg) end,
 		})
@@ -6636,12 +6699,14 @@ function Application.start(host: any, uiSource: string?, loadLibrary: ((any) -> 
 
 	-- Quick panel (touch-friendly)
 	do
+
 		local okMobile, mobileResult = pcall(Mobile.create, {
 			Player = player,
 			Options = options,
 			Combat = controllers and controllers.Combat,
 			ReadNumber = readNumber,
 			Library = library,
+			Window = function() return interface and interface.Window end,
 			Input = input,
 			Panic = panic,
 			Notify = function(message) Interface.notify(library, message) end,
@@ -6653,7 +6718,8 @@ function Application.start(host: any, uiSource: string?, loadLibrary: ((any) -> 
 		end
 	end
 
-		-- Runtime extras: godmode / invis / antifling / evade / hitbox
+
+	-- Runtime extras: godmode / invis / evade / hitbox
 	environment.task.spawn(function()
 		local wasInvisible = false
 		while isRunning() do
@@ -6669,26 +6735,33 @@ function Application.start(host: any, uiSource: string?, loadLibrary: ((any) -> 
 					Movement.applyInvisibility(player, false)
 					wasInvisible = false
 				end
-				if readOption("AntiFling", false) then
-					Movement.antiFlingTick(player)
-				end
-				if controllers and controllers.Combat and gameState then
-					Movement.autoEvadeTick({
-						ReadOption = readOption,
-						ReadNumber = readNumber,
-						Round = gameState.Round,
-						Player = player,
-					})
-					if readOption("HitboxExpand", false) and controllers.Combat.HitboxExpand then
-						controllers.Combat.HitboxExpand(readNumber("HitboxSize", 6))
-					elseif Combat.restoreHitboxes then
-						Combat.restoreHitboxes()
+				local combatController = controllers and controllers.Combat
+				if combatController and gameState then
+					if not combatController.Flinging then
+						Movement.autoEvadeTick({
+							ReadOption = readOption,
+							ReadNumber = readNumber,
+							Round = gameState.Round,
+							Player = player,
+						})
+					end
+					if readOption("HitboxExpand", false) and combatController.HitboxExpand then
+						combatController.HitboxExpand(readNumber("HitboxSize", 6))
+					elseif combatController.HitboxActive and combatController.HitboxRestore then
+						combatController.HitboxRestore()
 					end
 				end
 			end)
 			wait(0.2)
 		end
 	end)
+
+	-- anti fling must run every frame, a 0.2s tick is far too slow to stop a fling
+	table.insert(state.Connections, runService.Heartbeat:Connect(function()
+		if readOption("AntiFling", false) and not (controllers.Combat and controllers.Combat.Flinging) then
+			pcall(Movement.antiFlingTick, player)
+		end
+	end))
 
 	Interface.notify(library, "Apex Hub ready  ·  MM2")
 	return diagnostics
@@ -6724,19 +6797,21 @@ function Mobile.create(dependencies)
 	end
 
 	local C = {
-		Bg = Color3.fromRGB(13, 15, 22),
-		Panel = Color3.fromRGB(19, 22, 32),
-		Row = Color3.fromRGB(26, 30, 43),
-		RowHover = Color3.fromRGB(33, 38, 54),
-		Stroke = Color3.fromRGB(52, 60, 86),
-		Text = Color3.fromRGB(232, 236, 248),
-		Sub = Color3.fromRGB(134, 144, 174),
-		Accent = Color3.fromRGB(72, 118, 235),
-		AccentDark = Color3.fromRGB(44, 78, 170),
-		On = Color3.fromRGB(62, 198, 138),
-		Off = Color3.fromRGB(56, 62, 86),
-		Danger = Color3.fromRGB(208, 62, 74),
-		Warn = Color3.fromRGB(206, 150, 50),
+		Bg = Color3.fromRGB(11, 12, 19),
+		Panel = Color3.fromRGB(16, 18, 28),
+		Row = Color3.fromRGB(23, 26, 39),
+		RowHover = Color3.fromRGB(29, 33, 49),
+		RowOn = Color3.fromRGB(26, 31, 54),
+		Stroke = Color3.fromRGB(42, 48, 72),
+		Text = Color3.fromRGB(236, 239, 250),
+		Sub = Color3.fromRGB(139, 147, 178),
+		Muted = Color3.fromRGB(88, 96, 128),
+		Accent = Color3.fromRGB(99, 115, 255),
+		Accent2 = Color3.fromRGB(146, 92, 255),
+		On = Color3.fromRGB(64, 208, 148),
+		Off = Color3.fromRGB(48, 53, 76),
+		Danger = Color3.fromRGB(240, 82, 100),
+		Warn = Color3.fromRGB(242, 178, 72),
 	}
 
 	local alive = true
@@ -6757,9 +6832,9 @@ function Mobile.create(dependencies)
 		return object
 	end
 
-	local function tween(object, props, duration)
+	local function tween(object, props, duration, style)
 		pcall(function()
-			TweenService:Create(object, TweenInfo.new(duration or 0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props):Play()
+			TweenService:Create(object, TweenInfo.new(duration or 0.16, style or Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props):Play()
 		end)
 	end
 
@@ -6776,16 +6851,10 @@ function Mobile.create(dependencies)
 		}, object)
 	end
 
-	local function label(parentObject, text, size, font, color, alignment)
-		return new("TextLabel", {
-			BackgroundTransparency = 1,
-			Text = text,
-			TextSize = size,
-			Font = font,
-			TextColor3 = color,
-			TextXAlignment = alignment or Enum.TextXAlignment.Left,
-			Size = UDim2.new(1, 0, 1, 0),
-		}, parentObject)
+	local function text(parentObject, props)
+		props.BackgroundTransparency = 1
+		props.BorderSizePixel = 0
+		return new("TextLabel", props, parentObject)
 	end
 
 	-- ---------- root ----------
@@ -6802,9 +6871,21 @@ function Mobile.create(dependencies)
 	local viewport = screen.AbsoluteSize
 	if viewport.X < 100 or viewport.Y < 100 then viewport = Vector2.new(1280, 720) end
 
-	local panelW = math.min(304, viewport.X - 20)
-	local panelH = math.min(430, viewport.Y - 24)
-	local HEADER_H, TABS_H, FOOTER_H = 54, 38, 58
+	local panelW = math.min(332, viewport.X - 16)
+	local panelH = math.min(486, viewport.Y - 24)
+	local HEADER_H, TABS_H, FOOTER_H = 62, 46, 62
+
+	-- soft shadow (plain frames: no asset ids needed)
+	local shadow = new("Frame", {
+		Name = "Shadow",
+		Size = UDim2.fromOffset(panelW + 14, panelH + 14),
+		Position = UDim2.fromOffset(math.max(8, viewport.X - panelW - 12) - 7, math.max(12, (viewport.Y - panelH) / 2) - 3),
+		BackgroundColor3 = Color3.new(0, 0, 0),
+		BackgroundTransparency = 0.8,
+		BorderSizePixel = 0,
+		Visible = UserInputService.TouchEnabled,
+	}, screen)
+	corner(shadow, 22)
 
 	local panel = new("Frame", {
 		Name = "Panel",
@@ -6817,7 +6898,30 @@ function Mobile.create(dependencies)
 		Visible = UserInputService.TouchEnabled,
 	}, screen)
 	corner(panel, 16)
-	stroke(panel, C.Stroke, 1.2, 0.2)
+	local panelStroke = stroke(panel, C.Stroke, 1.2, 0)
+	new("UIGradient", {
+		Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, C.Accent),
+			ColorSequenceKeypoint.new(1, C.Accent2),
+		}),
+		Rotation = 90,
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.55),
+			NumberSequenceKeypoint.new(0.35, 0.9),
+			NumberSequenceKeypoint.new(1, 0.9),
+		}),
+	}, panelStroke)
+	local panelScale = new("UIScale", { Scale = 1 }, panel)
+
+	-- keep the shadow glued to the panel
+	local function syncShadow()
+		shadow.Size = UDim2.fromOffset(panel.AbsoluteSize.X + 14, panel.AbsoluteSize.Y + 14)
+		local position = panel.Position
+		shadow.Position = UDim2.fromOffset(position.X.Offset - 7, position.Y.Offset - 3)
+		shadow.Visible = panel.Visible
+	end
+	track(panel:GetPropertyChangedSignal("Position"):Connect(syncShadow))
+	track(panel:GetPropertyChangedSignal("Visible"):Connect(syncShadow))
 
 	-- ---------- header ----------
 	local header = new("Frame", {
@@ -6827,79 +6931,69 @@ function Mobile.create(dependencies)
 		BorderSizePixel = 0,
 		Active = true,
 	}, panel)
-	new("UIGradient", {
-		Color = ColorSequence.new(C.Panel, C.Bg),
-		Rotation = 90,
-	}, header)
+	new("UIGradient", { Color = ColorSequence.new(C.Panel, C.Bg), Rotation = 90 }, header)
 
 	local logo = new("Frame", {
-		Size = UDim2.fromOffset(32, 32),
-		Position = UDim2.fromOffset(12, 11),
+		Size = UDim2.fromOffset(36, 36),
+		Position = UDim2.fromOffset(14, 13),
 		BackgroundColor3 = C.Accent,
 		BorderSizePixel = 0,
 	}, header)
-	corner(logo, 9)
-	new("UIGradient", { Color = ColorSequence.new(C.Accent, C.AccentDark), Rotation = 45 }, logo)
-	label(logo, "A", 18, Enum.Font.GothamBlack, Color3.new(1, 1, 1), Enum.TextXAlignment.Center)
+	corner(logo, 10)
+	new("UIGradient", { Color = ColorSequence.new(C.Accent, C.Accent2), Rotation = 45 }, logo)
+	text(logo, {
+		Size = UDim2.new(1, 0, 1, 0), Text = "A", TextSize = 19, Font = Enum.Font.GothamBlack,
+		TextColor3 = Color3.new(1, 1, 1),
+	})
 
-	local title = new("TextLabel", {
-		BackgroundTransparency = 1,
-		Position = UDim2.fromOffset(52, 8),
-		Size = UDim2.new(1, -110, 0, 20),
-		Text = "APEX HUB",
-		TextSize = 15,
-		Font = Enum.Font.GothamBold,
-		TextColor3 = C.Text,
+	text(header, {
+		Position = UDim2.fromOffset(60, 11), Size = UDim2.new(1, -130, 0, 20),
+		Text = "APEX HUB", TextSize = 15, Font = Enum.Font.GothamBold, TextColor3 = C.Text,
 		TextXAlignment = Enum.TextXAlignment.Left,
-	}, header)
+	})
 
-	local subtitle = new("TextLabel", {
-		BackgroundTransparency = 1,
-		Position = UDim2.fromOffset(52, 28),
-		Size = UDim2.new(1, -110, 0, 16),
-		Text = "MM2  ·  all features off",
-		TextSize = 11,
-		Font = Enum.Font.Gotham,
-		TextColor3 = C.Sub,
-		TextXAlignment = Enum.TextXAlignment.Left,
+	local statusDot = new("Frame", {
+		Position = UDim2.fromOffset(61, 38), Size = UDim2.fromOffset(8, 8),
+		BackgroundColor3 = C.Off, BorderSizePixel = 0,
 	}, header)
+	corner(statusDot, 4)
+
+	local subtitle = text(header, {
+		Position = UDim2.fromOffset(76, 33), Size = UDim2.new(1, -140, 0, 18),
+		Text = "Murder Mystery 2  ·  all features off", TextSize = 11, Font = Enum.Font.Gotham,
+		TextColor3 = C.Sub, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+	})
 
 	local minimize = new("TextButton", {
-		Size = UDim2.fromOffset(30, 30),
-		Position = UDim2.new(1, -42, 0, 12),
-		BackgroundColor3 = C.Row,
-		AutoButtonColor = false,
-		Text = "–",
-		TextSize = 20,
-		Font = Enum.Font.GothamBold,
-		TextColor3 = C.Sub,
-		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(32, 32), Position = UDim2.new(1, -46, 0, 15),
+		BackgroundColor3 = C.Row, AutoButtonColor = false, Text = "–", TextSize = 20,
+		Font = Enum.Font.GothamBold, TextColor3 = C.Sub, BorderSizePixel = 0,
 	}, header)
-	corner(minimize, 8)
+	corner(minimize, 9)
+	stroke(minimize, C.Stroke, 1, 0.5)
+	track(minimize.MouseEnter:Connect(function() tween(minimize, { BackgroundColor3 = C.RowHover, TextColor3 = C.Text }, 0.1) end))
+	track(minimize.MouseLeave:Connect(function() tween(minimize, { BackgroundColor3 = C.Row, TextColor3 = C.Sub }, 0.1) end))
 
-	-- ---------- launcher pill ----------
+	new("Frame", {
+		Position = UDim2.new(0, 0, 0, HEADER_H - 1), Size = UDim2.new(1, 0, 0, 1),
+		BackgroundColor3 = C.Stroke, BackgroundTransparency = 0.45, BorderSizePixel = 0,
+	}, panel)
+
+	-- ---------- launcher ----------
 	local launcher = new("TextButton", {
 		Name = "Launcher",
-		Size = UDim2.fromOffset(46, 46),
-		Position = UDim2.fromOffset(viewport.X - 62, math.max(12, viewport.Y * 0.5 - 23)),
-		BackgroundColor3 = C.Accent,
-		AutoButtonColor = false,
-		Text = "A",
-		TextSize = 20,
-		Font = Enum.Font.GothamBlack,
-		TextColor3 = Color3.new(1, 1, 1),
-		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(48, 48),
+		Position = UDim2.fromOffset(viewport.X - 64, math.max(12, viewport.Y * 0.5 - 24)),
+		BackgroundColor3 = C.Accent, AutoButtonColor = false, Text = "A", TextSize = 20,
+		Font = Enum.Font.GothamBlack, TextColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
 		Visible = not panel.Visible,
 	}, screen)
-	corner(launcher, 23)
+	corner(launcher, 24)
 	stroke(launcher, Color3.new(1, 1, 1), 1, 0.8)
-	new("UIGradient", { Color = ColorSequence.new(C.Accent, C.AccentDark), Rotation = 45 }, launcher)
+	new("UIGradient", { Color = ColorSequence.new(C.Accent, C.Accent2), Rotation = 45 }, launcher)
 
 	local function setPanelVisible(visible)
-		panel.Visible = visible
-		launcher.Visible = not visible
 		if visible then
-			-- keep the panel on screen after the launcher moved
 			local vp = screen.AbsoluteSize
 			local size = panel.AbsoluteSize
 			local pos = panel.AbsolutePosition
@@ -6907,6 +7001,13 @@ function Mobile.create(dependencies)
 				math.clamp(pos.X, 0, math.max(0, vp.X - size.X)),
 				math.clamp(pos.Y, 0, math.max(0, vp.Y - size.Y))
 			)
+			panelScale.Scale = 0.94
+			panel.Visible = true
+			launcher.Visible = false
+			tween(panelScale, { Scale = 1 }, 0.2, Enum.EasingStyle.Back)
+		else
+			panel.Visible = false
+			launcher.Visible = true
 		end
 	end
 
@@ -6949,13 +7050,24 @@ function Mobile.create(dependencies)
 	makeDraggable(launcher, launcher, function() setPanelVisible(true) end)
 	track(minimize.Activated:Connect(function() setPanelVisible(false) end))
 
-	-- ---------- tabs ----------
+	-- ---------- content definition ----------
+	local function flingPower()
+		return dependencies.ReadNumber and dependencies.ReadNumber("FlingPower", 180) or 180
+	end
+	local function combatCall(method, ...)
+		local combat = dependencies.Combat
+		if not (combat and combat[method]) then return false, "Combat unavailable" end
+		return combat[method](...)
+	end
+
 	local tabDefs = {
 		{
 			Name = "Main",
 			Items = {
+				{ Header = "FARMING" },
 				{ Toggle = "AutoCoins", Label = "Auto Farm Coins" },
 				{ Toggle = "AutoGrabGun", Label = "Auto Grab Gun" },
+				{ Header = "SURVIVAL" },
 				{ Toggle = "AutoEvade", Label = "Auto Evade Murderer" },
 				{ Toggle = "AntiFling", Label = "Anti Fling" },
 				{ Toggle = "Godmode", Label = "Godmode" },
@@ -6965,49 +7077,32 @@ function Mobile.create(dependencies)
 		{
 			Name = "Combat",
 			Items = {
+				{ Header = "AUTOMATION" },
 				{ Toggle = "KillAura", Label = "Kill Aura" },
 				{ Toggle = "AutoKillAll", Label = "Auto Kill All" },
 				{ Toggle = "AutoKillSheriff", Label = "Auto Kill Sheriff" },
 				{ Toggle = "AutoShoot", Label = "Auto Shoot" },
 				{ Toggle = "Triggerbot", Label = "Triggerbot" },
+				{ Header = "AIM" },
 				{ Toggle = "KnifeSilentAim", Label = "Knife Silent Aim" },
 				{ Toggle = "GunSilentAim", Label = "Gun Silent Aim" },
 				{ Toggle = "HitboxExpand", Label = "Hitbox Expand" },
-				{
-					Action = "Fling Murderer", Color = C.Danger,
-					Run = function()
-						local combat = dependencies.Combat
-						if not (combat and combat.FlingMurderer) then return false, "Combat unavailable" end
-						local power = dependencies.ReadNumber and dependencies.ReadNumber("FlingPower", 180) or 180
-						return combat.FlingMurderer(power)
-					end,
-				},
-				{
-					Action = "Fling Sheriff", Color = C.Danger,
-					Run = function()
-						local combat = dependencies.Combat
-						if not (combat and combat.FlingSheriff) then return false, "Combat unavailable" end
-						local power = dependencies.ReadNumber and dependencies.ReadNumber("FlingPower", 180) or 180
-						return combat.FlingSheriff(power)
-					end,
-				},
-				{
-					Action = "Grab Gun", Color = C.Warn,
-					Run = function()
-						local combat = dependencies.Combat
-						if not (combat and combat.GrabGun) then return false, "Combat unavailable" end
-						return combat.GrabGun()
-					end,
-				},
+				{ Header = "ACTIONS" },
+				{ Action = "Fling Murderer", Color = C.Danger, Run = function() return combatCall("FlingMurderer", flingPower()) end },
+				{ Action = "Fling Sheriff", Color = C.Danger, Run = function() return combatCall("FlingSheriff", flingPower()) end },
+				{ Action = "Fling All", Color = C.Danger, Run = function() return combatCall("FlingAll", flingPower()) end },
+				{ Action = "Grab Gun", Color = C.Warn, Run = function() return combatCall("GrabGun") end },
 			},
 		},
 		{
 			Name = "Visual",
 			Items = {
-				{ Toggle = "EspOn", Label = "ESP" },
-				{ Toggle = "EspCoins", Label = "ESP · Coins" },
-				{ Toggle = "EspTraps", Label = "ESP · Traps" },
-				{ Toggle = "EspTracers", Label = "ESP · Tracers" },
+				{ Header = "ESP" },
+				{ Toggle = "EspOn", Label = "Player ESP" },
+				{ Toggle = "EspCoins", Label = "Coins" },
+				{ Toggle = "EspTraps", Label = "Traps" },
+				{ Toggle = "EspTracers", Label = "Tracers" },
+				{ Header = "WORLD" },
 				{ Toggle = "Fullbright", Label = "Fullbright" },
 				{ Toggle = "LowGraphics", Label = "Low Graphics" },
 			},
@@ -7015,6 +7110,7 @@ function Mobile.create(dependencies)
 		{
 			Name = "Move",
 			Items = {
+				{ Header = "MOVEMENT" },
 				{ Toggle = "Fly", Label = "Fly" },
 				{ Toggle = "Noclip", Label = "Noclip" },
 				{ Toggle = "SpeedOn", Label = "Speed" },
@@ -7025,26 +7121,32 @@ function Mobile.create(dependencies)
 		},
 	}
 
-	local tabBar = new("Frame", {
+	-- ---------- segmented tab bar ----------
+	local count = #tabDefs
+	local segment = new("Frame", {
 		Name = "Tabs",
-		Position = UDim2.fromOffset(0, HEADER_H),
-		Size = UDim2.new(1, 0, 0, TABS_H),
-		BackgroundTransparency = 1,
+		Position = UDim2.fromOffset(12, HEADER_H + 8),
+		Size = UDim2.new(1, -24, 0, 32),
+		BackgroundColor3 = C.Row,
+		BorderSizePixel = 0,
 	}, panel)
-	new("UIPadding", {
-		PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10),
-		PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4),
-	}, tabBar)
-	new("UIListLayout", {
-		FillDirection = Enum.FillDirection.Horizontal,
-		Padding = UDim.new(0, 4),
-		SortOrder = Enum.SortOrder.LayoutOrder,
-	}, tabBar)
+	corner(segment, 10)
+	stroke(segment, C.Stroke, 1, 0.55)
+
+	local indicator = new("Frame", {
+		Size = UDim2.new(1 / count, -6, 1, -6),
+		Position = UDim2.new(0, 3, 0, 3),
+		BackgroundColor3 = C.Accent,
+		BorderSizePixel = 0,
+		ZIndex = 1,
+	}, segment)
+	corner(indicator, 8)
+	new("UIGradient", { Color = ColorSequence.new(C.Accent, C.Accent2), Rotation = 0 }, indicator)
 
 	local content = new("Frame", {
 		Name = "Content",
-		Position = UDim2.fromOffset(0, HEADER_H + TABS_H),
-		Size = UDim2.new(1, 0, 1, -(HEADER_H + TABS_H + FOOTER_H)),
+		Position = UDim2.fromOffset(0, HEADER_H + TABS_H + 8),
+		Size = UDim2.new(1, 0, 1, -(HEADER_H + TABS_H + 8 + FOOTER_H)),
 		BackgroundTransparency = 1,
 		ClipsDescendants = true,
 	}, panel)
@@ -7054,12 +7156,9 @@ function Mobile.create(dependencies)
 	local function selectTab(index)
 		for i, page in ipairs(pages) do
 			page.Visible = (i == index)
-			local button = tabButtons[i]
-			tween(button, {
-				BackgroundColor3 = (i == index) and C.Accent or C.Row,
-				TextColor3 = (i == index) and Color3.new(1, 1, 1) or C.Sub,
-			})
+			tween(tabButtons[i], { TextColor3 = (i == index) and Color3.new(1, 1, 1) or C.Sub }, 0.14)
 		end
+		tween(indicator, { Position = UDim2.new((index - 1) / count, 3, 0, 3) }, 0.2, Enum.EasingStyle.Quint)
 	end
 
 	local function readToggle(name)
@@ -7067,55 +7166,62 @@ function Mobile.create(dependencies)
 		return option ~= nil and option.Value == true
 	end
 
+	local function buildHeaderRow(page, item, order)
+		local holder = new("Frame", {
+			Size = UDim2.new(1, 0, 0, 24), BackgroundTransparency = 1, LayoutOrder = order,
+		}, page)
+		text(holder, {
+			Position = UDim2.fromOffset(4, 8), Size = UDim2.new(1, -8, 0, 14), Text = item.Header,
+			TextSize = 10, Font = Enum.Font.GothamBold, TextColor3 = C.Muted, TextXAlignment = Enum.TextXAlignment.Left,
+		})
+	end
+
 	local function buildToggleRow(page, item, order)
 		local option = options[item.Toggle]
 		local row = new("TextButton", {
-			Size = UDim2.new(1, 0, 0, 44),
-			BackgroundColor3 = C.Row,
-			AutoButtonColor = false,
-			Text = "",
-			BorderSizePixel = 0,
-			LayoutOrder = order,
+			Size = UDim2.new(1, 0, 0, 42), BackgroundColor3 = C.Row, AutoButtonColor = false, Text = "",
+			BorderSizePixel = 0, LayoutOrder = order,
 		}, page)
 		corner(row, 10)
-		stroke(row, C.Stroke, 1, 0.65)
+		local rowStroke = stroke(row, C.Stroke, 1, 0.6)
 
-		local text = new("TextLabel", {
-			BackgroundTransparency = 1,
-			Position = UDim2.fromOffset(14, 0),
-			Size = UDim2.new(1, -76, 1, 0),
-			Text = item.Label,
-			TextSize = 14,
-			Font = Enum.Font.GothamMedium,
-			TextColor3 = option and C.Text or C.Sub,
-			TextTransparency = option and 0 or 0.4,
-			TextXAlignment = Enum.TextXAlignment.Left,
-		}, row)
+		local name = text(row, {
+			Position = UDim2.fromOffset(14, 0), Size = UDim2.new(1, -78, 1, 0), Text = item.Label,
+			TextSize = 13, Font = Enum.Font.GothamMedium,
+			TextColor3 = option and C.Text or C.Muted, TextXAlignment = Enum.TextXAlignment.Left,
+		})
 
 		local track_ = new("Frame", {
-			AnchorPoint = Vector2.new(1, 0.5),
-			Position = UDim2.new(1, -12, 0.5, 0),
-			Size = UDim2.fromOffset(42, 22),
-			BackgroundColor3 = C.Off,
-			BorderSizePixel = 0,
+			AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0),
+			Size = UDim2.fromOffset(40, 22), BackgroundColor3 = C.Off, BorderSizePixel = 0,
 		}, row)
 		corner(track_, 11)
 		local knob = new("Frame", {
-			AnchorPoint = Vector2.new(0, 0.5),
-			Position = UDim2.new(0, 3, 0.5, 0),
-			Size = UDim2.fromOffset(16, 16),
-			BackgroundColor3 = Color3.new(1, 1, 1),
-			BorderSizePixel = 0,
+			AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 3, 0.5, 0),
+			Size = UDim2.fromOffset(16, 16), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
 		}, track_)
 		corner(knob, 8)
 
 		local shown = nil
+		local hovering = false
 		local function paint(state)
 			if shown == state then return end
 			shown = state
 			tween(track_, { BackgroundColor3 = state and C.On or C.Off })
-			tween(knob, { Position = state and UDim2.new(1, -19, 0.5, 0) or UDim2.new(0, 3, 0.5, 0) })
+			tween(knob, { Position = state and UDim2.new(1, -19, 0.5, 0) or UDim2.new(0, 3, 0.5, 0) }, 0.18, Enum.EasingStyle.Back)
+			tween(row, { BackgroundColor3 = state and C.RowOn or (hovering and C.RowHover or C.Row) })
+			tween(rowStroke, { Color = state and C.Accent or C.Stroke, Transparency = state and 0.55 or 0.6 })
+			tween(name, { TextColor3 = state and C.Text or (option and C.Text or C.Muted) })
 		end
+
+		track(row.MouseEnter:Connect(function()
+			hovering = true
+			if not shown then tween(row, { BackgroundColor3 = C.RowHover }, 0.1) end
+		end))
+		track(row.MouseLeave:Connect(function()
+			hovering = false
+			if not shown then tween(row, { BackgroundColor3 = C.Row }, 0.1) end
+		end))
 
 		track(row.Activated:Connect(function()
 			local current = options[item.Toggle]
@@ -7136,23 +7242,21 @@ function Mobile.create(dependencies)
 	end
 
 	local function buildActionRow(page, item, order)
+		local tint = item.Color or C.Accent
 		local button = new("TextButton", {
-			Size = UDim2.new(1, 0, 0, 44),
-			BackgroundColor3 = item.Color or C.Accent,
-			AutoButtonColor = false,
-			Text = item.Action,
-			TextSize = 14,
-			Font = Enum.Font.GothamBold,
-			TextColor3 = Color3.new(1, 1, 1),
-			BorderSizePixel = 0,
-			LayoutOrder = order,
+			Size = UDim2.new(1, 0, 0, 40), BackgroundColor3 = C.Row, AutoButtonColor = false, Text = item.Action,
+			TextSize = 13, Font = Enum.Font.GothamBold, TextColor3 = tint, BorderSizePixel = 0, LayoutOrder = order,
 		}, page)
 		corner(button, 10)
+		stroke(button, tint, 1, 0.55)
+		track(button.MouseEnter:Connect(function() tween(button, { BackgroundColor3 = C.RowHover }, 0.1) end))
+		track(button.MouseLeave:Connect(function() tween(button, { BackgroundColor3 = C.Row }, 0.1) end))
 		local busy = false
 		track(button.Activated:Connect(function()
 			if busy then return end
 			busy = true
-			tween(button, { BackgroundTransparency = 0.45 }, 0.08)
+			button.Text = item.Action .. "  ·  …"
+			tween(button, { BackgroundColor3 = tint, TextColor3 = Color3.new(1, 1, 1) }, 0.08)
 			task.spawn(function()
 				local ok, result, reason = pcall(item.Run)
 				if not ok then
@@ -7160,49 +7264,39 @@ function Mobile.create(dependencies)
 				elseif result == false then
 					notify(item.Action .. ": " .. tostring(reason or "failed"))
 				end
-				tween(button, { BackgroundTransparency = 0 }, 0.18)
+				button.Text = item.Action
+				tween(button, { BackgroundColor3 = C.Row, TextColor3 = tint }, 0.2)
 				busy = false
 			end)
 		end))
 	end
 
 	for index, definition in ipairs(tabDefs) do
-		local count = #tabDefs
 		local tabButton = new("TextButton", {
-			Size = UDim2.new(1 / count, -(4 * (count - 1)) / count, 1, 0),
-			BackgroundColor3 = C.Row,
-			AutoButtonColor = false,
-			Text = definition.Name,
-			TextSize = 12,
-			Font = Enum.Font.GothamBold,
-			TextColor3 = C.Sub,
-			BorderSizePixel = 0,
-			LayoutOrder = index,
-		}, tabBar)
-		corner(tabButton, 8)
+			Size = UDim2.new(1 / count, 0, 1, 0), Position = UDim2.new((index - 1) / count, 0, 0, 0),
+			BackgroundTransparency = 1, AutoButtonColor = false, Text = definition.Name, TextSize = 12,
+			Font = Enum.Font.GothamBold, TextColor3 = C.Sub, BorderSizePixel = 0, ZIndex = 2,
+		}, segment)
 		tabButtons[index] = tabButton
 
 		local page = new("ScrollingFrame", {
 			Name = definition.Name,
-			Size = UDim2.new(1, 0, 1, 0),
-			BackgroundTransparency = 1,
-			BorderSizePixel = 0,
-			ScrollBarThickness = 3,
-			ScrollBarImageColor3 = C.Accent,
-			CanvasSize = UDim2.new(0, 0, 0, 0),
-			AutomaticCanvasSize = Enum.AutomaticSize.Y,
-			ScrollingDirection = Enum.ScrollingDirection.Y,
+			Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
+			ScrollBarThickness = 3, ScrollBarImageColor3 = C.Accent, CanvasSize = UDim2.new(0, 0, 0, 0),
+			AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
 			Visible = false,
 		}, content)
 		new("UIPadding", {
-			PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 12),
-			PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 8),
+			PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 14),
+			PaddingTop = UDim.new(0, 0), PaddingBottom = UDim.new(0, 10),
 		}, page)
 		new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, page)
 		pages[index] = page
 
 		for order, item in ipairs(definition.Items) do
-			if item.Toggle then
+			if item.Header then
+				buildHeaderRow(page, item, order)
+			elseif item.Toggle then
 				buildToggleRow(page, item, order)
 			else
 				buildActionRow(page, item, order)
@@ -7213,79 +7307,69 @@ function Mobile.create(dependencies)
 	end
 
 	-- ---------- footer ----------
+	new("Frame", {
+		AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, -FOOTER_H), Size = UDim2.new(1, 0, 0, 1),
+		BackgroundColor3 = C.Stroke, BackgroundTransparency = 0.45, BorderSizePixel = 0,
+	}, panel)
+
 	local footer = new("Frame", {
-		Name = "Footer",
-		AnchorPoint = Vector2.new(0, 1),
-		Position = UDim2.new(0, 0, 1, 0),
-		Size = UDim2.new(1, 0, 0, FOOTER_H),
-		BackgroundColor3 = C.Panel,
-		BorderSizePixel = 0,
+		Name = "Footer", AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, 0),
+		Size = UDim2.new(1, 0, 0, FOOTER_H), BackgroundColor3 = C.Panel, BorderSizePixel = 0,
 	}, panel)
 	new("UIPadding", {
-		PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10),
-		PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8),
+		PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12),
+		PaddingTop = UDim.new(0, 11), PaddingBottom = UDim.new(0, 11),
 	}, footer)
 	new("UIListLayout", {
-		FillDirection = Enum.FillDirection.Horizontal,
-		Padding = UDim.new(0, 8),
-		SortOrder = Enum.SortOrder.LayoutOrder,
+		FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder,
 	}, footer)
 
-	local function footerButton(text, color, order, callback)
+	local function footerButton(label, color, filled, order, callback)
 		local button = new("TextButton", {
-			Size = UDim2.new(0.5, -4, 1, 0),
-			BackgroundColor3 = color,
-			AutoButtonColor = false,
-			Text = text,
-			TextSize = 14,
-			Font = Enum.Font.GothamBold,
-			TextColor3 = Color3.new(1, 1, 1),
-			BorderSizePixel = 0,
-			LayoutOrder = order,
+			Size = UDim2.new(0.5, -4, 1, 0), BackgroundColor3 = filled and color or C.Row, AutoButtonColor = false,
+			Text = label, TextSize = 13, Font = Enum.Font.GothamBold,
+			TextColor3 = filled and Color3.new(1, 1, 1) or color, BorderSizePixel = 0, LayoutOrder = order,
 		}, footer)
 		corner(button, 10)
+		if filled then
+			new("UIGradient", { Color = ColorSequence.new(C.Accent, C.Accent2), Rotation = 0 }, button)
+		else
+			stroke(button, color, 1, 0.5)
+		end
 		track(button.Activated:Connect(function()
-			tween(button, { BackgroundTransparency = 0.4 }, 0.07)
+			tween(button, { BackgroundTransparency = 0.45 }, 0.07)
 			task.delay(0.12, function() tween(button, { BackgroundTransparency = 0 }, 0.15) end)
 			pcall(callback)
 		end))
 		return button
 	end
 
-	footerButton("PANIC", C.Danger, 1, function()
+	footerButton("PANIC", C.Danger, false, 1, function()
 		if dependencies.Panic then dependencies.Panic() end
 		for _, sync in ipairs(syncers) do pcall(sync) end
 	end)
 
-	footerButton("Full Menu", C.Accent, 2, function()
+	footerButton("Full Menu", C.Accent, true, 2, function()
+		local window = dependencies.Window and dependencies.Window() or nil
 		local library = dependencies.Library
-		if not library then return end
-		local window = library._waveWindow
+		window = window or (library and library._waveWindow)
 		local opened = false
 		if window then
-			for _, method in ipairs({ "Show", "Open", "Toggle" }) do
+			for _, method in ipairs({ "Minimize", "Show", "Open", "Toggle" }) do
 				if type(window[method]) == "function" then
 					opened = pcall(window[method], window)
 					if opened then break end
 				end
 			end
 		end
-		if not opened and type(library.Toggle) == "function" then
-			pcall(library.Toggle, library)
+		if not opened and library and type(library.Toggle) == "function" then
+			opened = pcall(library.Toggle, library)
 		end
+		if not opened then notify("Press RightShift to open the full menu") end
 	end)
 
-	-- divider line above footer
-	new("Frame", {
-		AnchorPoint = Vector2.new(0, 1),
-		Position = UDim2.new(0, 0, 1, -FOOTER_H),
-		Size = UDim2.new(1, 0, 0, 1),
-		BackgroundColor3 = C.Stroke,
-		BackgroundTransparency = 0.5,
-		BorderSizePixel = 0,
-	}, panel)
-
 	selectTab(1)
+	syncShadow()
 
 	-- ---------- state sync ----------
 	task.spawn(function()
@@ -7295,7 +7379,8 @@ function Mobile.create(dependencies)
 				local ok, state = pcall(sync)
 				if ok and state then active = active + 1 end
 			end
-			subtitle.Text = "MM2  ·  " .. (active == 0 and "all features off" or (tostring(active) .. " active"))
+			subtitle.Text = "Murder Mystery 2  ·  " .. (active == 0 and "all features off" or (tostring(active) .. " active"))
+			tween(statusDot, { BackgroundColor3 = active == 0 and C.Off or C.On }, 0.2)
 			task.wait(0.25)
 		end
 	end)
