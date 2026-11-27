@@ -879,7 +879,17 @@ export type EspEntryDependencies = {
 function Esp.createFolder(newInstance: (string) -> any, coreGui: any): any
 	local folder = newInstance("Folder")
 	folder.Name = "ApexMM2Visuals"
-	folder.Parent = coreGui
+	local parent = coreGui
+	if type(gethui) == "function" then
+		local okHui, hui = pcall(gethui)
+		if okHui and hui then parent = hui end
+	end
+	local attached = pcall(function() folder.Parent = parent end)
+	if not attached or folder.Parent == nil then
+		local localPlayer = game:GetService("Players").LocalPlayer
+		local gui = localPlayer and localPlayer:FindFirstChildOfClass("PlayerGui")
+		pcall(function() folder.Parent = gui or coreGui end)
+	end
 	return folder
 end
 
@@ -1667,11 +1677,15 @@ function Combat.flingTarget(combat, player, power)
 		return false, "Another action is running"
 	end
 
+	local flingError = nil
 	local ok = combat.Run(function()
 		local runService = game:GetService("RunService")
 		local myCharacter = localRoot.Parent
-		local saved = localRoot.CFrame
-		local force = power * 2800
+		local localHumanoid = myCharacter and myCharacter:FindFirstChildOfClass("Humanoid")
+		local camera = workspace.CurrentCamera
+		local oldCFrame = localRoot.CFrame
+		local targetHead = character:FindFirstChild("Head") or root
+		local oldDestroyHeight = workspace.FallenPartsDestroyHeight
 
 		combat.Flinging = true
 		if combat.Mover then
@@ -1679,6 +1693,10 @@ function Combat.flingTarget(combat, player, power)
 			-- farm / other holders rewrite the CFrame every Heartbeat and would kill the fling
 			if combat.Mover.Conn then pcall(combat.Mover.Stop) end
 		end
+
+		-- being thrown out of the map must not kill you
+		pcall(function() workspace.FallenPartsDestroyHeight = 0 / 0 end)
+		if camera then pcall(function() camera.CameraSubject = targetHead end) end
 
 		-- own body movers (fly) fight the velocity we set: neutralise them for the duration
 		local neutralised = {}
@@ -1692,63 +1710,118 @@ function Combat.flingTarget(combat, player, power)
 			end
 		end
 
-		-- heavy body + colliding root: the part that actually transfers momentum
-		local physical = {}
-		for _, part in ipairs(myCharacter:GetDescendants()) do
-			if part:IsA("BasePart") then
-				physical[part] = part.CustomPhysicalProperties
-				part.CustomPhysicalProperties = PhysicalProperties.new(100, 0.3, 0.5)
-			end
+		-- the classic skid fling: our root sits inside the target spinning at absurd speed, the
+		-- velocity is only huge for the physics step, so the target takes the hit, not us
+		local keep = Instance.new("BodyVelocity")
+		keep.Name = "ApexFling"
+		keep.Velocity = Vector3.new(9e8, 9e8, 9e8)
+		keep.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+		keep.Parent = localRoot
+		if localHumanoid then
+			pcall(function() localHumanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, false) end)
 		end
-		localRoot.CanCollide = true
+
+		local function place(basePart, offset, angle)
+			local target = CFrame.new(basePart.Position) * offset * angle
+			if myCharacter then pcall(function() myCharacter:PivotTo(target) end) end
+			localRoot.CFrame = target
+			localRoot.Velocity = Vector3.new(9e7, 9e7 * 10, 9e7)
+			localRoot.RotVelocity = Vector3.new(9e8, 9e8, 9e8)
+		end
+
+		local function alive()
+			return root.Parent == character
+				and localRoot.Parent ~= nil
+				and player.Parent ~= nil
+				and targetHumanoid.Health > 0
+				and not targetHumanoid.Sit
+				and (not localHumanoid or localHumanoid.Health > 0)
+		end
 
 		local started = os.clock()
 		local success, failure = pcall(function()
-			while os.clock() - started < 1.45 do
-				if not root.Parent or not localRoot.Parent then break end
-				if targetHumanoid.Health <= 0 then break end
-				if root.AssemblyLinearVelocity.Magnitude > 700 then break end -- already launched
-				local lead = root.CFrame + root.AssemblyLinearVelocity * 0.1
-				localRoot.CFrame = lead * CFrame.new((math.random() - 0.5) * 1.5, (math.random() - 0.5) * 1.2, (math.random() - 0.5) * 1.5)
-				localRoot.AssemblyLinearVelocity = Vector3.new(
-					(math.random() - 0.5) * force * 2,
-					(math.random() - 0.2) * force * 2,
-					(math.random() - 0.5) * force * 2
-				)
-				localRoot.AssemblyAngularVelocity = Vector3.new(
-					(math.random() - 0.5) * force,
-					(math.random() - 0.5) * force,
-					(math.random() - 0.5) * force
-				)
-				runService.Heartbeat:Wait()
+			local angle = 0
+			local maxTime = if power >= 250 then 3 else 2
+			while alive() and os.clock() - started < maxTime do
+				if root.Velocity.Magnitude > 500 then break end -- launched
+				local move = targetHumanoid.MoveDirection * root.Velocity.Magnitude / 1.25
+				if root.Velocity.Magnitude < 50 then
+					angle += 100
+					local spin = CFrame.Angles(math.rad(angle), 0, 0)
+					local offsets = {
+						CFrame.new(0, 1.5, 0) + move,
+						CFrame.new(0, -1.5, 0) + move,
+						CFrame.new(2.25, 1.5, -2.25) + move,
+						CFrame.new(-2.25, -1.5, 2.25) + move,
+						CFrame.new(0, 1.5, 0) + targetHumanoid.MoveDirection,
+						CFrame.new(0, -1.5, 0) + targetHumanoid.MoveDirection,
+					}
+					for _, offset in ipairs(offsets) do
+						if not alive() then break end
+						place(root, offset, spin)
+						runService.Heartbeat:Wait()
+					end
+				else
+					local walk = targetHumanoid.WalkSpeed
+					local steps = {
+						{ CFrame.new(0, 1.5, walk), CFrame.Angles(math.rad(90), 0, 0) },
+						{ CFrame.new(0, -1.5, -walk), CFrame.Angles(0, 0, 0) },
+						{ CFrame.new(0, 1.5, walk), CFrame.Angles(math.rad(90), 0, 0) },
+						{ CFrame.new(0, -1.5, 0), CFrame.Angles(math.rad(90), 0, 0) },
+						{ CFrame.new(0, -1.5, 0), CFrame.Angles(0, 0, 0) },
+						{ CFrame.new(0, -1.5, 0), CFrame.Angles(math.rad(-90), 0, 0) },
+						{ CFrame.new(0, -1.5, 0), CFrame.Angles(0, 0, 0) },
+					}
+					for _, step in ipairs(steps) do
+						if not alive() then break end
+						place(root, step[1], step[2])
+						runService.Heartbeat:Wait()
+					end
+				end
 			end
 		end)
 
-		for part, properties in pairs(physical) do
-			if part.Parent then part.CustomPhysicalProperties = properties end
-		end
+		pcall(function() keep:Destroy() end)
 		for object, data in pairs(neutralised) do
-			if object.Parent then object[data[1]] = data[2] end
+			if object.Parent then pcall(function() object[data[1]] = data[2] end) end
 		end
-		-- bleed the leftover velocity off before handing control back
-		for _ = 1, 4 do
-			if localRoot.Parent then
-				localRoot.AssemblyLinearVelocity = Vector3.zero
-				localRoot.AssemblyAngularVelocity = Vector3.zero
-				localRoot.CFrame = saved
+		if localHumanoid then
+			pcall(function() localHumanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, true) end)
+		end
+		if camera and localHumanoid then pcall(function() camera.CameraSubject = localHumanoid end) end
+
+		-- walk back to where we started and kill every leftover velocity before handing control back
+		local returned = os.clock()
+		repeat
+			if not localRoot.Parent then break end
+			local home = oldCFrame * CFrame.new(0, 0.5, 0)
+			if myCharacter then pcall(function() myCharacter:PivotTo(home) end) end
+			localRoot.CFrame = home
+			if localHumanoid then pcall(function() localHumanoid:ChangeState(Enum.HumanoidStateType.GettingUp) end) end
+			if myCharacter then
+				for _, part in ipairs(myCharacter:GetChildren()) do
+					if part:IsA("BasePart") then
+						part.Velocity = Vector3.zero
+						part.RotVelocity = Vector3.zero
+					end
+				end
 			end
 			runService.Heartbeat:Wait()
-		end
+		until (localRoot.Position - oldCFrame.Position).Magnitude < 25 or os.clock() - returned > 3
 
+		pcall(function() workspace.FallenPartsDestroyHeight = oldDestroyHeight end)
 		combat.Flinging = false
 		if combat.Mover then combat.Mover.Flinging = false end
-		if not success then error(failure, 0) end
+		if not success then
+			flingError = tostring(failure)
+			error(failure, 0)
+		end
 	end)
 
 	combat.Flinging = false
 	if combat.Mover then combat.Mover.Flinging = false end
 	if ok then return true end
-	return false, "Fling errored (see log)"
+	return false, flingError or "Fling errored"
 end
 
 
@@ -2441,6 +2514,12 @@ function Lifecycle.loop(isRunning: () -> any, callback: () -> (), log: (string) 
 		if not ok then
 			local suffix = if name then " in " .. name else ""
 			log("Error" .. suffix .. ": " .. tostring(raised))
+			Lifecycle.warned = Lifecycle.warned or {}
+			local key = tostring(name)
+			if not Lifecycle.warned[key] then
+				Lifecycle.warned[key] = true
+				warn("[Apex] loop error" .. suffix .. ": " .. tostring(raised))
+			end
 		end
 
 		wait(delay)
