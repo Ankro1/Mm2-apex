@@ -847,6 +847,10 @@ end
 function Esp.updateEntry(readNumber: (string, number) -> any, readOption: (string, any) -> any, entry: any, character: any, head: any, color: any, text: any)
 	local transparency = readNumber("EspFill", 6) / 10
 	local highlight = entry.Highlight
+	if entry.Char and entry.Char == character then
+		if highlight and highlight.Parent ~= character then pcall(function() highlight.Parent = character end) end
+		if head and entry.Billboard.Parent ~= head then pcall(function() entry.Billboard.Parent = head end) end
+	end
 	if highlight then
 		highlight.Adornee = character
 		highlight.FillColor = color
@@ -1167,6 +1171,12 @@ function Esp.update(dependencies: EspUpdateDependencies)
 		local entry = esp.Entries[player]
 		local role = round.Role(player)
 		local character, root, humanoid = dependencies.CharacterParts(player)
+		if entry and entry.Char and entry.Char ~= character then
+			-- respawned: the old Highlight died with the old character
+			dependencies.DestroyEntry(entry)
+			esp.Entries[player] = nil
+			entry = nil
+		end
 		if character and root and (not humanoid or humanoid.Health > 0) then
 			local guessed = Esp.guessRole(player, character)
 			if role == "Hero" then
@@ -1185,6 +1195,7 @@ function Esp.update(dependencies: EspUpdateDependencies)
 					continue
 				end
 				entry = created
+				entry.Char = character
 				esp.Entries[player] = entry
 			end
 			local distance = if localRoot then dependencies.Floor((root.Position - localRoot.Position).Magnitude) else 0
@@ -1208,6 +1219,13 @@ function Esp.update(dependencies: EspUpdateDependencies)
 			dependencies.DestroyEntry(entry)
 			esp.Entries[player] = nil
 		end
+	end
+
+	if os.clock() - (esp.LastInfo or 0) > 8 then
+		esp.LastInfo = os.clock()
+		local parentName = "?"
+		pcall(function() parentName = esp.Folder.Parent and esp.Folder.Parent:GetFullName() or "nil" end)
+		print(string.format("[Apex ESP] on | players: %d | drawn: %d | folder: %s", #dependencies.Players:GetPlayers() - 1, shown, parentName))
 	end
 
 	if shown == 0 and #dependencies.Players:GetPlayers() > 1 and os.clock() - (esp.LastDiag or 0) > 6 then
