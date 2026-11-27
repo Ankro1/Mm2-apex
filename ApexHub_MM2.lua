@@ -503,7 +503,6 @@ function Application.createEnvironment(host: any, uiSource: string?): (any, any)
 	environment.http = { request = localRequest }
 	environment.WebSocket, environment.websocket = { connect = disabledSocket }, { connect = disabledSocket }
 	environment.queue_on_teleport, environment.queueonteleport = disabledQueue, disabledQueue
-	-- This scoped build never enqueues a loader, so its queue is already empty.
 	environment.clearteleportqueue = function() end
 	environment.clear_teleport_queue = environment.clearteleportqueue
 	environment.syn = {
@@ -812,27 +811,46 @@ function Spectate.create(workspace: any, parts: (any) -> (any, any, any), localP
 	return spectate
 end
 
+-- ============================================================
+-- ESP (Fixed & Improved)
+-- ============================================================
+
 function Esp.color(options: any, palette: any, typeOf: (any) -> string, defaultColor: any, role: any): any
-	local option = options["Color" .. role]
+	local option = options and options["Color" .. tostring(role)]
 	if option and typeOf(option.Value) == "Color3" then return option.Value end
-	return palette[role] or defaultColor
+	return (palette and palette[role]) or defaultColor
 end
 
 function Esp.destroyEntry(entry: any)
-	pcall(function() entry.Highlight:Destroy() end)
-	pcall(function() entry.Billboard:Destroy() end)
+	if not entry then return end
+	if entry.Highlight then pcall(function() entry.Highlight:Destroy() end) end
+	if entry.Billboard then pcall(function() entry.Billboard:Destroy() end) end
 	if entry.Line then pcall(function() entry.Line:Remove() end) end
 end
 
 function Esp.hide(entry: any)
-	entry.Highlight.Enabled = false
-	entry.Billboard.Enabled = false
+	if not entry then return end
+	if entry.Highlight then
+		pcall(function()
+			entry.Highlight.Enabled = false
+			entry.Highlight.Adornee = nil
+		end)
+	end
+	if entry.Billboard then
+		pcall(function()
+			entry.Billboard.Enabled = false
+			entry.Billboard.Adornee = nil
+		end)
+	end
 	entry.Visible = false
-	if entry.Line then entry.Line.Visible = false end
+	entry.Target = nil
+	if entry.Line then
+		pcall(function() entry.Line.Visible = false end)
+	end
 end
 
 function Esp.hideAll(esp: any, hide: (any) -> ())
-	for _, entry: any in pairs(esp.Entries) do
+	for _, entry: any in pairs(esp.Entries or {}) do
 		if entry.Visible then hide(entry) end
 	end
 	if esp.GunEntry and esp.GunEntry.Visible then hide(esp.GunEntry) end
@@ -845,21 +863,33 @@ function Esp.hideAll(esp: any, hide: (any) -> ())
 end
 
 function Esp.updateEntry(readNumber: (string, number) -> any, readOption: (string, any) -> any, entry: any, character: any, head: any, color: any, text: any)
-	local transparency = readNumber("EspFill", 6) / 10
-	entry.Highlight.Adornee = character
-	entry.Highlight.FillColor = color
-	entry.Highlight.OutlineColor = color
-	entry.Highlight.FillTransparency = transparency
-	local highlight = entry.Highlight
-	highlight.Enabled = (not entry.NoHighlight) and readOption("EspHighlight", true)
-	entry.Billboard.Adornee = head
-	entry.Label.Text = text
-	entry.Label.TextColor3 = color
-	local billboard = entry.Billboard
-	billboard.Enabled = readOption("EspNames", true)
+	if not entry then return end
+	local fillRaw = tonumber(readNumber("EspFill", 6)) or 6
+	local transparency = math.clamp(fillRaw / 10, 0, 1)
+	local showHighlight = (not entry.NoHighlight) and (readOption("EspHighlight", true) == true) and (character ~= nil)
+	local showNames = (readOption("EspNames", true) == true) and (head ~= nil)
+
+	if entry.Highlight then
+		entry.Highlight.Adornee = if showHighlight then character else nil
+		entry.Highlight.FillColor = color
+		entry.Highlight.OutlineColor = color
+		entry.Highlight.FillTransparency = transparency
+		entry.Highlight.OutlineTransparency = 0.1
+		entry.Highlight.Enabled = showHighlight
+	end
+
+	if entry.Billboard then
+		entry.Billboard.Adornee = if showNames then head else nil
+		if entry.Label then
+			entry.Label.Text = tostring(text or "")
+			entry.Label.TextColor3 = color
+		end
+		entry.Billboard.Enabled = showNames
+	end
+
 	entry.Color = color
 	entry.Target = head
-	entry.Visible = true
+	entry.Visible = showHighlight or showNames
 end
 
 export type EspEntryDependencies = {
@@ -900,13 +930,13 @@ end
 
 function Esp.createEntry(dependencies: EspEntryDependencies, folder: any, name: any): any
 	local highlight = dependencies.NewInstance("Highlight")
-	highlight.Name = name
+	highlight.Name = tostring(name) .. "_HL"
 	highlight.DepthMode = dependencies.DepthMode()
 	highlight.Enabled = false
 	highlight.Parent = folder
 
 	local billboard = dependencies.NewInstance("BillboardGui")
-	billboard.Name = name
+	billboard.Name = tostring(name) .. "_BB"
 	billboard.AlwaysOnTop = true
 	billboard.Size = dependencies.BillboardSize
 	billboard.StudsOffset = dependencies.Offset
@@ -919,21 +949,21 @@ function Esp.createEntry(dependencies: EspEntryDependencies, folder: any, name: 
 	label.Size = dependencies.LabelSize
 	label.Font = dependencies.Font()
 	label.TextSize = 13
-	label.TextStrokeTransparency = 0.4
+	label.TextStrokeTransparency = 0.35
 	label.TextColor3 = dependencies.White
 	label.Parent = billboard
 
 	local line
-	if dependencies.HasDrawing then
+	if dependencies.HasDrawing and dependencies.NewDrawing then
 		local ok, drawing = pcall(dependencies.NewDrawing, "Line")
-		if ok then
+		if ok and drawing then
 			line = drawing
 			line.Visible = false
 			line.Thickness = 1.5
 			line.Transparency = 1
 		end
 	end
-	return { Highlight = highlight, Billboard = billboard, Label = label, Line = line }
+	return { Highlight = highlight, Billboard = billboard, Label = label, Line = line, Visible = false }
 end
 
 function Esp.remove(esp: any, destroyEntry: (any) -> (), player: any)
@@ -944,8 +974,8 @@ function Esp.remove(esp: any, destroyEntry: (any) -> (), player: any)
 end
 
 function Esp.destroy(esp: any, destroyEntry: (any) -> (), folder: any)
-	for _, entry in pairs(esp.Entries) do destroyEntry(entry) end
-	table.clear(esp.Entries)
+	for _, entry in pairs(esp.Entries or {}) do destroyEntry(entry) end
+	if esp.Entries then table.clear(esp.Entries) end
 	if esp.GunEntry then
 		destroyEntry(esp.GunEntry)
 		esp.GunEntry = nil
@@ -958,17 +988,19 @@ function Esp.destroy(esp: any, destroyEntry: (any) -> (), folder: any)
 		for _, entry in pairs(esp.TrapEntries) do destroyEntry(entry) end
 		table.clear(esp.TrapEntries)
 	end
-	pcall(function() folder:Destroy() end)
+	if folder then pcall(function() folder:Destroy() end) end
 end
 
 function Esp.updateTracer(entry: any, camera: any, origin: any, enabled: any, newVector2: (number, number) -> any, white: any, thickness: number?)
-	if not entry.Line then return end
-	if not enabled or not entry.Visible or not entry.Target or not entry.Target.Parent then
+	if not entry or not entry.Line then return end
+	if not enabled or not entry.Visible or not entry.Target or not entry.Target.Parent or not camera then
 		entry.Line.Visible = false
 		return
 	end
-	local point, visible = camera:WorldToViewportPoint(entry.Target.Position)
-	if not visible then
+	local ok, point, onScreen = pcall(function()
+		return camera:WorldToViewportPoint(entry.Target.Position)
+	end)
+	if not ok or not point or point.Z <= 0 or not onScreen then
 		entry.Line.Visible = false
 		return
 	end
@@ -979,15 +1011,16 @@ function Esp.updateTracer(entry: any, camera: any, origin: any, enabled: any, ne
 	entry.Line.Visible = true
 end
 
-function Esp.tracers(state: any, readOption: (string, any) -> any, workspace: any, newVector2: (number, number) -> any, update: (any, any, any, any) -> ())
-	local enabled = readOption("EspOn", false) and readOption("EspTracers", false)
+function Esp.tracers(state: any, readOption: (string, any) -> any, workspace: any, newVector2: (number, number) -> any, update: (any, any, any, any, any) -> ())
+	local enabled = (readOption("EspOn", false) == true) and (readOption("EspTracers", false) == true)
 	if not enabled and not state.TracersActive then return end
 	state.TracersActive = enabled
-	local camera = workspace.CurrentCamera
+	local camera = workspace and workspace.CurrentCamera
+	if not camera then return end
 	local viewport = camera.ViewportSize
 	local origin = newVector2(viewport.X / 2, viewport.Y - 4)
-	local thickM = readOption("MurdererTracerStrong", true) and 3.8 or 1.5
-	for _, entry in pairs(state.Entries) do
+	local thickM = if readOption("MurdererTracerStrong", true) then 3.8 else 1.5
+	for _, entry in pairs(state.Entries or {}) do
 		local th = if entry.IsMurderer then thickM else 1.5
 		update(entry, camera, origin, enabled, th)
 	end
@@ -1011,7 +1044,6 @@ export type EspUpdateDependencies = {
 	TypeOf: (any) -> string,
 	ObjectPosition: (any) -> any,
 }
-
 
 function Esp.updateWorldObjects(esp, dependencies)
 	local readOption = dependencies.ReadOption
@@ -1038,17 +1070,14 @@ function Esp.updateWorldObjects(esp, dependencies)
 		end
 	end)
 
-	-- coins: label only, no Highlight (Roblox renders max 31 Highlights, coins would starve the players)
+	-- Coins: Billboard only (avoid hitting Roblox's 31 Highlight limit)
 	if readOption("EspCoins", false) then
 		esp.CoinEntries = esp.CoinEntries or {}
 		local container = map:FindFirstChild("CoinContainer")
 		local seen = {}
 		if container then
 			for _, coin in ipairs(container:GetChildren()) do
-				local part = coin
-				if not coin:IsA("BasePart") then
-					part = coin:FindFirstChildWhichIsA("BasePart", true)
-				end
+				local part = if coin:IsA("BasePart") then coin else coin:FindFirstChildWhichIsA("BasePart", true)
 				if part then
 					seen[coin] = true
 					local entry = esp.CoinEntries[coin]
@@ -1058,7 +1087,7 @@ function Esp.updateWorldObjects(esp, dependencies)
 						esp.CoinEntries[coin] = entry
 					end
 					pcall(function()
-						dependencies.UpdateEntry(entry, coin, part, coinColor, "Coin")
+						dependencies.UpdateEntry(entry, part, part, coinColor, "Coin")
 					end)
 				end
 			end
@@ -1070,16 +1099,15 @@ function Esp.updateWorldObjects(esp, dependencies)
 			end
 		end
 	elseif esp.CoinEntries and next(esp.CoinEntries) ~= nil then
-		for coin, entry in pairs(esp.CoinEntries) do
+		for _, entry in pairs(esp.CoinEntries) do
 			Esp.destroyEntry(entry)
-			esp.CoinEntries[coin] = nil
 		end
+		table.clear(esp.CoinEntries)
 	end
 
 	if readOption("EspTraps", false) then
 		esp.TrapEntries = esp.TrapEntries or {}
 		local now = os.clock()
-		-- GetDescendants on the whole map is heavy: rescan once per second, not every tick
 		if esp.TrapMap ~= map or now >= (esp.NextTrapScan or 0) then
 			esp.TrapMap = map
 			esp.NextTrapScan = now + 1
@@ -1088,10 +1116,7 @@ function Esp.updateWorldObjects(esp, dependencies)
 				local lowered = string.lower(tostring(desc.Name))
 				if string.find(lowered, "trap", 1, true) or string.find(lowered, "bear", 1, true) then
 					if desc:IsA("BasePart") or desc:IsA("Model") then
-						local part = desc
-						if not desc:IsA("BasePart") then
-							part = desc:FindFirstChildWhichIsA("BasePart", true)
-						end
+						local part = if desc:IsA("BasePart") then desc else desc:FindFirstChildWhichIsA("BasePart", true)
 						if part then found[desc] = part end
 					end
 				end
@@ -1100,7 +1125,7 @@ function Esp.updateWorldObjects(esp, dependencies)
 		end
 		local seen = esp.TrapFound or {}
 		for desc, part in pairs(seen) do
-			if desc.Parent then
+			if desc.Parent and part.Parent then
 				local entry = esp.TrapEntries[desc]
 				if not entry then
 					entry = dependencies.CreateEntry("Trap")
@@ -1108,7 +1133,7 @@ function Esp.updateWorldObjects(esp, dependencies)
 					esp.TrapEntries[desc] = entry
 				end
 				pcall(function()
-					dependencies.UpdateEntry(entry, desc, part, trapColor, "Trap")
+					dependencies.UpdateEntry(entry, part, part, trapColor, "Trap")
 				end)
 			end
 		end
@@ -1119,19 +1144,35 @@ function Esp.updateWorldObjects(esp, dependencies)
 			end
 		end
 	elseif esp.TrapEntries and next(esp.TrapEntries) ~= nil then
-		for obj, entry in pairs(esp.TrapEntries) do
+		for _, entry in pairs(esp.TrapEntries) do
 			Esp.destroyEntry(entry)
-			esp.TrapEntries[obj] = nil
 		end
+		table.clear(esp.TrapEntries)
 	end
 end
 
-
 function Esp.guessRole(player: any, character: any): string
-	local backpack = player:FindFirstChildOfClass("Backpack")
+	local backpack = player and player:FindFirstChildOfClass("Backpack")
 	if Inventory.findTool(character, "Weapon_Knife") or Inventory.findTool(backpack, "Weapon_Knife") then return "Murderer" end
 	if Inventory.findTool(character, "Weapon_Gun") or Inventory.findTool(backpack, "Weapon_Gun") then return "Sheriff" end
 	return "Innocent"
+end
+
+function Esp.resolvePlayerRole(round: any, player: any, character: any, humanoid: any): string?
+	local role = if round and round.Role then round.Role(player) else nil
+	if role == "Dead" then
+		return "Dead"
+	end
+	if character and (not humanoid or humanoid.Health > 0) then
+		local guessed = Esp.guessRole(player, character)
+		if guessed == "Murderer" or guessed == "Sheriff" then
+			return guessed
+		end
+		if not role or role == "" then
+			return guessed
+		end
+	end
+	return role
 end
 
 function Esp.update(dependencies: EspUpdateDependencies)
@@ -1140,40 +1181,41 @@ function Esp.update(dependencies: EspUpdateDependencies)
 		dependencies.HideAll()
 		return
 	end
+
 	local roles = dependencies.Select(readOption("EspRoles", {}))
 	if next(roles) == nil then
-		-- filter value came back empty / in an unknown shape: that used to hide every player
 		roles = { Murderer = true, Sheriff = true, Hero = true, Innocent = true }
 	end
+
 	local shown = 0
 	local localRoot = dependencies.LocalParts()
+
 	for _, player: any in ipairs(dependencies.Players:GetPlayers() :: any) do
 		if player == dependencies.Player then continue end
 		local entry = esp.Entries[player]
-		local role = round.Role(player)
 		local character, root, humanoid = dependencies.CharacterParts(player)
-		if character and root and (not humanoid or humanoid.Health > 0) then
-			local guessed = Esp.guessRole(player, character)
-			if guessed == "Murderer" or guessed == "Sheriff" then
-				role = guessed
-			elseif not role then
-				role = guessed
-			end
-		end
-		if role and roles[role] and character and root then
+		local role = Esp.resolvePlayerRole(round, player, character, humanoid)
+
+		if role and role ~= "Dead" and roles[role] and character and root and (not humanoid or humanoid.Health > 0) then
 			if not entry then
 				local okCreate, created = pcall(dependencies.CreateEntry, player.Name)
 				if not okCreate then
-					if not esp.WarnedCreate then esp.WarnedCreate = true; warn("[Apex ESP] could not create entry: " .. tostring(created)) end
+					if not esp.WarnedCreate then
+						esp.WarnedCreate = true
+						warn("[Apex ESP] could not create entry: " .. tostring(created))
+					end
 					continue
 				end
 				entry = created
 				esp.Entries[player] = entry
 			end
-			local distance = if localRoot then dependencies.Floor((root.Position - localRoot.Position).Magnitude) else 0
+
+			local distance = if localRoot and root then dependencies.Floor((root.Position - localRoot.Position).Magnitude) else 0
 			entry.IsMurderer = (role == "Murderer")
-			local text = player.DisplayName .. " | " .. role
-			if readOption("EspDistance", true) then text ..= " | " .. tostring(distance) .. "m" end
+			local text = tostring(player.DisplayName or player.Name) .. " | " .. tostring(role)
+			if readOption("EspDistance", true) then
+				text ..= " | " .. tostring(distance) .. "m"
+			end
 			local head = character:FindFirstChild("Head") or root
 			local okEntry, entryError = pcall(dependencies.UpdateEntry, entry, character, head, esp.Color(role), text)
 			if okEntry then
@@ -1186,6 +1228,7 @@ function Esp.update(dependencies: EspUpdateDependencies)
 			if entry then dependencies.Hide(entry) end
 		end
 	end
+
 	for player: any, entry in pairs(esp.Entries) do
 		if dependencies.TypeOf(player) == "Instance" and player.Parent ~= dependencies.Players then
 			dependencies.DestroyEntry(entry)
@@ -1196,20 +1239,28 @@ function Esp.update(dependencies: EspUpdateDependencies)
 	if shown == 0 and #dependencies.Players:GetPlayers() > 1 and os.clock() - (esp.LastDiag or 0) > 6 then
 		esp.LastDiag = os.clock()
 		local rolesKnown, mapLoaded = 0, false
-		pcall(function() for _ in pairs(round.Data()) do rolesKnown += 1 end end)
-		pcall(function() mapLoaded = round.Map() ~= nil end)
+		pcall(function()
+			if round and round.Data then
+				for _ in pairs(round.Data()) do rolesKnown += 1 end
+			end
+		end)
+		pcall(function() mapLoaded = round and round.Map and round.Map() ~= nil end)
 		local report = string.format("ESP: nothing drawn | role entries: %d | map: %s", rolesKnown, tostring(mapLoaded))
 		warn("[Apex] " .. report)
 		if esp.Notify then pcall(esp.Notify, report) end
 	end
 
-	local gun = if readOption("EspGun", true) then round.GunDrop() else nil
+	local gun = if readOption("EspGun", true) and round and round.GunDrop then round.GunDrop() else nil
 	if gun then
 		esp.GunEntry = esp.GunEntry or dependencies.CreateEntry("GunDrop")
-		local distance = if localRoot and dependencies.ObjectPosition(gun) then dependencies.Floor((dependencies.ObjectPosition(gun) - localRoot.Position).Magnitude) else 0
-		local entry = esp.GunEntry
+		local gunPos = dependencies.ObjectPosition(gun)
+		local distance = if localRoot and gunPos then dependencies.Floor((gunPos - localRoot.Position).Magnitude) else 0
 		local part = if gun:IsA("BasePart") then gun else gun:FindFirstChildWhichIsA("BasePart", true)
-		dependencies.UpdateEntry(entry, gun, part, esp.Color("Hero"), "Dropped Gun | " .. tostring(distance) .. "m")
+		if part then
+			pcall(dependencies.UpdateEntry, esp.GunEntry, part, part, esp.Color("Hero"), "Dropped Gun | " .. tostring(distance) .. "m")
+		elseif esp.GunEntry then
+			dependencies.Hide(esp.GunEntry)
+		end
 	elseif esp.GunEntry then
 		dependencies.Hide(esp.GunEntry)
 	end
@@ -1626,6 +1677,9 @@ export type CombatStepDependencies = {
 	ObjectPosition: (any) -> any,
 }
 
+-- ============================================================
+-- Fling (Fixed & Improved)
+-- ============================================================
 
 function Combat.flingTarget(combat, player, power)
 	power = math.clamp(tonumber(power) or 180, 40, 600)
@@ -1636,6 +1690,7 @@ function Combat.flingTarget(combat, player, power)
 	if player == localPlayer then
 		return false, "Can't fling yourself"
 	end
+
 	local character = player.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart")
 	local targetHumanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -1660,20 +1715,25 @@ function Combat.flingTarget(combat, player, power)
 		return false, "Another action is running"
 	end
 
+	local flingError = nil
 	local ok = combat.Run(function()
 		local runService = game:GetService("RunService")
 		local myCharacter = localRoot.Parent
-		local saved = localRoot.CFrame
-		local force = power * 2800
+		local localHumanoid = myCharacter and myCharacter:FindFirstChildOfClass("Humanoid")
+		local savedCFrame = localRoot.CFrame
+		local savedPlatformStand = if localHumanoid then localHumanoid.PlatformStand else false
+		local spinSpeed = math.clamp(power * 28, 2500, 18000)
+		local burstSpeed = math.clamp(power * 3.2, 220, 1200)
 
 		combat.Flinging = true
 		if combat.Mover then
 			combat.Mover.Flinging = true
-			-- farm / other holders rewrite the CFrame every Heartbeat and would kill the fling
-			if combat.Mover.Conn then pcall(combat.Mover.Stop) end
+			if type(combat.Mover.Stop) == "function" then
+				pcall(combat.Mover.Stop, combat.Mover)
+			end
 		end
 
-		-- own body movers (fly) fight the velocity we set: neutralise them for the duration
+		-- Neutralize conflicting body movers during fling
 		local neutralised = {}
 		for _, child in ipairs(localRoot:GetChildren()) do
 			if child:IsA("BodyVelocity") then
@@ -1682,68 +1742,106 @@ function Combat.flingTarget(combat, player, power)
 			elseif child:IsA("BodyGyro") then
 				neutralised[child] = { "MaxTorque", child.MaxTorque }
 				child.MaxTorque = Vector3.zero
+			elseif child:IsA("BodyAngularVelocity") then
+				neutralised[child] = { "MaxTorque", child.MaxTorque }
+				child.MaxTorque = Vector3.zero
 			end
 		end
 
-		-- heavy body + colliding root: the part that actually transfers momentum
+		-- Add temporary spin mover for reliable momentum transfer
+		local spinMover = Instance.new("BodyAngularVelocity")
+		spinMover.Name = "ApexFlingSpin"
+		spinMover.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
+		spinMover.AngularVelocity = Vector3.new(0, spinSpeed, 0)
+		spinMover.Parent = localRoot
+
 		local physical = {}
-		for _, part in ipairs(myCharacter:GetDescendants()) do
-			if part:IsA("BasePart") then
-				physical[part] = part.CustomPhysicalProperties
-				part.CustomPhysicalProperties = PhysicalProperties.new(100, 0.3, 0.5)
+		if myCharacter then
+			for _, part in ipairs(myCharacter:GetDescendants()) do
+				if part:IsA("BasePart") then
+					physical[part] = part.CustomPhysicalProperties
+					part.CustomPhysicalProperties = PhysicalProperties.new(50, 0, 0.9)
+					part.CanCollide = (part == localRoot)
+				end
 			end
 		end
 		localRoot.CanCollide = true
+		if localHumanoid then
+			pcall(function() localHumanoid.PlatformStand = true end)
+		end
 
 		local started = os.clock()
 		local success, failure = pcall(function()
-			while os.clock() - started < 1.45 do
-				if not root.Parent or not localRoot.Parent then break end
+			while os.clock() - started < 1.35 do
+				if not root.Parent or not localRoot.Parent or not player.Parent then break end
 				if targetHumanoid.Health <= 0 then break end
-				if root.AssemblyLinearVelocity.Magnitude > 700 then break end -- already launched
-				local lead = root.CFrame + root.AssemblyLinearVelocity * 0.1
-				localRoot.CFrame = lead * CFrame.new((math.random() - 0.5) * 1.5, (math.random() - 0.5) * 1.2, (math.random() - 0.5) * 1.5)
-				localRoot.AssemblyLinearVelocity = Vector3.new(
-					(math.random() - 0.5) * force * 2,
-					(math.random() - 0.2) * force * 2,
-					(math.random() - 0.5) * force * 2
+				if root.AssemblyLinearVelocity.Magnitude > 550 then break end
+
+				local targetVel = root.AssemblyLinearVelocity
+				local leadPos = root.Position + targetVel * 0.08
+				local jitter = Vector3.new(
+					(math.random() - 0.5) * 1.1,
+					(math.random() - 0.5) * 0.8,
+					(math.random() - 0.5) * 1.1
 				)
+				localRoot.CFrame = CFrame.new(leadPos + jitter) * CFrame.Angles(
+					math.random() * math.pi * 2,
+					math.random() * math.pi * 2,
+					math.random() * math.pi * 2
+				)
+
+				local pushDir = (root.Position - localRoot.Position)
+				local unitDir = if pushDir.Magnitude > 0.01 then pushDir.Unit else Vector3.new(0, 1, 0)
+				localRoot.AssemblyLinearVelocity = (unitDir + Vector3.new(0, 0.45, 0)).Unit * burstSpeed
 				localRoot.AssemblyAngularVelocity = Vector3.new(
-					(math.random() - 0.5) * force,
-					(math.random() - 0.5) * force,
-					(math.random() - 0.5) * force
+					(math.random() - 0.5) * spinSpeed,
+					spinSpeed,
+					(math.random() - 0.5) * spinSpeed
 				)
+
 				runService.Heartbeat:Wait()
 			end
 		end)
 
+		pcall(function() spinMover:Destroy() end)
+
 		for part, properties in pairs(physical) do
-			if part.Parent then part.CustomPhysicalProperties = properties end
+			if part and part.Parent then
+				pcall(function() part.CustomPhysicalProperties = properties end)
+			end
 		end
 		for object, data in pairs(neutralised) do
-			if object.Parent then object[data[1]] = data[2] end
+			if object and object.Parent then
+				pcall(function() object[data[1]] = data[2] end)
+			end
 		end
-		-- bleed the leftover velocity off before handing control back
+
+		if localHumanoid and localHumanoid.Parent then
+			pcall(function() localHumanoid.PlatformStand = savedPlatformStand end)
+		end
+
 		for _ = 1, 4 do
-			if localRoot.Parent then
+			if localRoot and localRoot.Parent then
 				localRoot.AssemblyLinearVelocity = Vector3.zero
 				localRoot.AssemblyAngularVelocity = Vector3.zero
-				localRoot.CFrame = saved
+				localRoot.CFrame = savedCFrame
 			end
 			runService.Heartbeat:Wait()
 		end
 
 		combat.Flinging = false
 		if combat.Mover then combat.Mover.Flinging = false end
-		if not success then error(failure, 0) end
+		if not success then
+			flingError = tostring(failure)
+			error(failure, 0)
+		end
 	end)
 
 	combat.Flinging = false
 	if combat.Mover then combat.Mover.Flinging = false end
 	if ok then return true end
-	return false, "Fling errored (see log)"
+	return false, flingError or "Fling failed"
 end
-
 
 function Combat.hitboxExpand(combat, size)
 	size = tonumber(size) or 6
@@ -1790,7 +1888,6 @@ function Combat.hitboxRestore(combat)
 	combat.HitboxActive = false
 end
 
-
 function Combat.triggerbotStep(combat, round, readOption, ready)
 	if not readOption("Triggerbot", false) then
 		return
@@ -1822,7 +1919,6 @@ function Combat.triggerbotStep(combat, round, readOption, ready)
 		end)
 	end
 end
-
 
 function Combat.step(dependencies: CombatStepDependencies)
 	local combat, round, quest = dependencies.Combat, dependencies.Round, dependencies.Quest
@@ -1859,7 +1955,6 @@ function Combat.step(dependencies: CombatStepDependencies)
 		if (readOption("AutoShoot", false) or wantsShoot) and ready("autoshoot", readNumber("ShootCooldown", 15) / 10) then
 			combat.ShootMurderer(readOption("ShootTeleport", false) or wantsShoot)
 		else
-			-- was unreachable before: the branch returned above and the old call required a gun again
 			Combat.triggerbotStep(combat, round, readOption, ready)
 		end
 		return
@@ -1878,7 +1973,6 @@ function Combat.step(dependencies: CombatStepDependencies)
 		end
 	end
 
-	-- Auto Return after gun
 	if combat.PendingReturn and ready("autoreturn", 0.45) then
 		combat.PendingReturn = false
 		if combat.DoReturn then combat.DoReturn() end
@@ -2562,7 +2656,7 @@ function Lifecycle.unload(dependencies: UnloadDependencies)
 
 	state.Running = false
 	if dependencies.Mover.Owner == "farm" then pcall(dependencies.Farm.Surface) end
-	pcall(dependencies.Mover.Stop)
+	pcall(dependencies.Mover.Stop, dependencies.Mover)
 	pcall(dependencies.Movement.StopFly)
 	pcall(dependencies.Movement.SetNoclip, false)
 	pcall(dependencies.Hooks.Remove)
@@ -2593,7 +2687,6 @@ function Lifecycle.unload(dependencies: UnloadDependencies)
 	end
 end
 
-
 function Lifecycle.panic(dependencies)
 	local options = dependencies.Options
 	local kills = {
@@ -2610,8 +2703,8 @@ function Lifecycle.panic(dependencies)
 		end
 	end
 	if dependencies.Combat and dependencies.Combat.HitboxRestore then pcall(dependencies.Combat.HitboxRestore) end
-	if dependencies.Mover then pcall(function() dependencies.Mover.Stop() end) end
-	if dependencies.Farm and dependencies.Farm.Surface then pcall(function() dependencies.Farm.Surface() end) end
+	if dependencies.Mover then pcall(dependencies.Mover.Stop, dependencies.Mover) end
+	if dependencies.Farm and dependencies.Farm.Surface then pcall(dependencies.Farm.Surface) end
 	if dependencies.Movement then
 		pcall(function() if dependencies.Movement.StopFly then dependencies.Movement.StopFly() end end)
 		pcall(function() if dependencies.Movement.SetNoclip then dependencies.Movement.SetNoclip(false) end end)
@@ -3034,8 +3127,10 @@ function Combat.targets(dependencies: CombatTargetDependencies): { any }
 	for _, player in ipairs(dependencies.Players:GetPlayers()) do
 		if player ~= dependencies.Player and dependencies.Round.IsAlive(player) then
 			local _, root = dependencies.CharacterParts(player)
-			local distance = if localRoot then (root.Position - localRoot.Position).Magnitude else 0
-			table.insert(targets, { Player = player, Root = root, Dist = distance })
+			if root then
+				local distance = if localRoot then (root.Position - localRoot.Position).Magnitude else 0
+				table.insert(targets, { Player = player, Root = root, Dist = distance })
+			end
 		end
 	end
 
@@ -3565,10 +3660,12 @@ function Combat.create(dependencies: CombatDependencies): any
 	end
 	function combat.FlingAll(power)
 		for _, t in ipairs(combat.Targets()) do
-			pcall(function()
-				combat.Fling(t.Player, power or 180)
-			end)
-			task.wait(0.12)
+			if t.Player and t.Player.Parent then
+				pcall(function()
+					combat.Fling(t.Player, power or 180)
+				end)
+				task.wait(0.12)
+			end
 		end
 		return true
 	end
@@ -3636,8 +3733,6 @@ function Round.info(round: { Data: () -> { [string]: unknown } }, player: RoundP
 	local info = data[player.Name]
 	if info then return info end
 
-	-- PlayerData missing (module path changed / not loaded yet): derive the role from tools
-	-- while a map is loaded, so ESP, fling targeting and kill logic keep working.
 	local covered = false
 	for _, other in ipairs(game:GetService("Players"):GetPlayers()) do
 		if data[other.Name] then covered = true break end
@@ -3887,7 +3982,7 @@ function Movement.teleport(localParts: () -> (any, ...any), mover: any, zero: an
 	if not destination then return false end
 	local root = localParts()
 	if not root then return false end
-	if mover.Conn then mover.Stop() end
+	if mover.Conn then mover.Stop(mover) end
 	root.CFrame = destination
 	root.AssemblyLinearVelocity = zero
 	return true
@@ -4524,7 +4619,6 @@ function Appearance.create(lighting: any, ambient: any): (any, () -> ())
 	return visuals, function() Appearance.updateFullbright(visuals, lighting, ambient) end
 end
 
-
 function Movement.applyGodmode(player, enabled)
 	local character = player and player.Character
 	if not character then return end
@@ -4559,7 +4653,6 @@ function Movement.antiFlingTick(player)
 		root.AssemblyLinearVelocity = Vector3.zero
 		root.AssemblyAngularVelocity = Vector3.zero
 	end
-	-- the actual cause of a fling is a collision with someone else's body: make them intangible to us
 	for _, other in ipairs(game:GetService("Players"):GetPlayers()) do
 		if other ~= player and other.Character then
 			for _, part in ipairs(other.Character:GetChildren()) do
@@ -4808,7 +4901,6 @@ function Movement.createCharacter(dependencies: CharacterMovementDependencies): 
 			})
 		end)
 	end
-
 
 	return movement, function()
 		if dependencies.Mover and dependencies.Mover.Flinging then return end
@@ -5076,7 +5168,7 @@ function Movement.hold(dependencies: HoldDependencies, owner: string, target: un
 	local mover = dependencies.Mover
 
 	if mover.Conn and mover.Char ~= character then
-		mover.Stop()
+		mover.Stop(mover)
 	end
 
 	mover.Owner = owner
@@ -5105,7 +5197,7 @@ function Movement.onFrame(dependencies: FrameDependencies)
 	local root = character and character:FindFirstChild("HumanoidRootPart")
 
 	if not root or character ~= dependencies.Player.Character then
-		mover.Stop()
+		mover.Stop(mover)
 		return
 	end
 
@@ -5161,12 +5253,12 @@ function Movement.stop(dependencies: StopDependencies, destination: unknown?)
 	mover.Target = nil
 end
 
-function Movement.release(mover: { Owner: string?, Stop: (unknown?) -> () }, owner: string, destination: unknown?)
+function Movement.release(mover: { Owner: string?, Stop: (any, unknown?) -> () }, owner: string, destination: unknown?)
 	if mover.Owner ~= owner then
 		return
 	end
 
-	mover.Stop(destination)
+	mover.Stop(mover, destination)
 end
 
 function Movement.current(dependencies: CurrentDependencies): MoveFrame?
@@ -5414,7 +5506,6 @@ local function buildCombatInterface(tabs: any, controls: any, dependencies: Inte
 		Callback = (dependencies.Callbacks["Fling Murderer"] or function() end),
 		Title = "Fling Murderer",
 	})
-
 	controls["Combat/Fling/Fling Sheriff"] = section:CreateButton({
 		Callback = (dependencies.Callbacks["Fling Sheriff"] or function() end),
 		Title = "Fling Sheriff",
@@ -6054,1437 +6145,4 @@ function Interface.update(dependencies: InterfaceUpdateDependencies)
 	local farm, stats, ui = dependencies.Farm, dependencies.Stats, dependencies.Ui
 	local format, setContent, setValue = dependencies.FormatNumber, dependencies.SetContent, dependencies.SetValue
 	local farmText = string.format("%s\nBags: %s\nCoins this session: %s", farm.Status, farm.BagText(), format(stats.Coins))
-	setContent(ui.FarmStatus, farmText)
-	setContent(ui.HomeFarm, if farm.Enabled() then farmText else "Off")
-	setValue(ui.CoinsCard, format(stats.Coins))
-	setValue(ui.RoundsCard, format(stats.Rounds))
-	setValue(ui.KillsCard, format(stats.Kills))
-	local candy = dependencies.Candy()
-	setValue(ui.CandyCard, if candy then format(candy) else "No event")
-	if ui.SyncMenuKey then (ui.SyncMenuKey :: any)() end
-
-	local round = dependencies.Round
-	local map, info = round.Map(), round.Info(dependencies.Player)
-	local roundText
-	if info then
-		local role, murderer, sheriff = round.MyRole(), round.Murderer(), round.Sheriff()
-		local sheriffRole = if sheriff and round.Role(sheriff) == "Hero" then "Hero" else "Sheriff"
-		local gun = if round.GunDrop() then "The gun is on the ground" else "Gun is not dropped"
-		roundText = string.format("Map: %s | You: %s\nMurderer: %s\n%s: %s\n%s", (if map then map.Name else "Loading") :: any, role, (if murderer then murderer.DisplayName else "None alive") :: any, sheriffRole, (if sheriff then sheriff.DisplayName else "None alive") :: any, gun)
-	elseif map then
-		roundText = "Round in progress | you are not in it"
-	else
-		roundText = "Waiting for the next round"
-	end
-	setContent(ui.HomeRound, roundText)
-	setContent(ui.CombatInfo, roundText)
-
-	local event = dependencies.Event
-	local main = event.Main()
-	if not main then
-		setContent(ui.EventStatus, "No event running right now")
-		setContent(ui.Quests, "No event quests")
-		return
-	end
-	local profile = event.Profile(main)
-	local pass = main.EventStartInfo.BattlePass or {}
-	local currency = event.Currency(main)
-	local claimable = event.Claimable(main)
-	local eventControl = ui.EventStatus
-	local title = dependencies.FormatName(main.Title)
-	local currencyText = format(currency)
-	local keysText = format(event.Owned("Materials", main.EventStartInfo.KeyName))
-	local tier = if profile then tonumber(profile.CurrentTier) or 0 else 0
-	local cost = format(pass.TierCost or 0)
-	local craftable = event.Craftable(main)
-	local eventText = string.format("%s\nCandy: %s | Keys: %s\nTier %s/%s | Next tier costs %s\nRewards to claim: %d | Recipes ready: %d", title :: any, currencyText :: any, keysText :: any, tier :: any, (pass.TotalTiers or "?") :: any, cost :: any, #claimable, #craftable)
-	setContent(eventControl, eventText)
-
-	local lines = event.QuestLines(main)
-	local count = dependencies.Minimum(#lines, 12)
-	local questLines = {}
-	for index = 1, count do
-		local line = lines[index]
-		table.insert(questLines, (if line.Done then "Done | " else "") .. line.Text)
-	end
-	if dependencies.ReadOption("AutoQuest", false) then
-		local names = dependencies.Quest.Names
-		local active = if #names > 0 then table.concat(names, ", ") else "every quest is done"
-		table.insert(questLines, 1, "Auto Quest | " .. active)
-	end
-	setContent(ui.Quests, if #questLines > 0 then table.concat(questLines, "\n") else "No quests found")
-end
-
-function Interface.refreshPlayers(list: () -> any, ui: any)
-	local values = list()
-	local teleport, spectate = ui.TpPlayer, ui.SpecPlayer
-	if teleport then
-		teleport:SetValues(values)
-		if spectate then spectate:SetValues(values) end
-	end
-end
-
-function Interface.playerRemoving(spectate: any, delay: (number, () -> ()) -> (), refresh: () -> (), player: any)
-	if spectate.Target == player then spectate.Set(nil) end
-	delay(0.5, refresh)
-end
-
-export type WebhookInterfaceDependencies = {
-	Webhook: any,
-	Notify: (string) -> (),
-	Schedule: (() -> ()) -> (),
-	Decorate: (any) -> any,
-	Summary: (boolean) -> (any, any),
-}
-
-function Interface.webhookCallbacks(dependencies: WebhookInterfaceDependencies): { [string]: () -> () }
-	local webhook = dependencies.Webhook
-	local function ready(): boolean
-		if webhook.Url() then return true end
-		dependencies.Notify("Enter a valid Discord webhook URL first")
-		return false
-	end
-	return {
-		["Send Test Message"] = function()
-			if not ready() then return end
-			dependencies.Schedule(function()
-				local post = webhook.Post
-				local embed = webhook.Embed("Webhook connected", "Notifications from Apex Hub | Murder Mystery 2 will appear here.", 5763719)
-				local ok, failure = post({ username = "Apex Hub", embeds = { dependencies.Decorate(embed) } })
-				dependencies.Notify(if ok then "Test message sent" else "Webhook failed: " .. tostring(failure))
-			end)
-		end,
-		["Send Summary Now"] = function()
-			if not ready() then return end
-			dependencies.Schedule(function()
-				local ok, failure = dependencies.Summary(true)
-				dependencies.Notify(if ok then "Summary sent" else "Webhook failed: " .. tostring(failure))
-			end)
-		end,
-	}
-end
-
-export type MovementInterfaceDependencies = {
-	Movement: any,
-	Input: any,
-	Options: any,
-}
-
-export type SimpleInterfaceDependencies = {
-	Window: any,
-	Library: any,
-	Visuals: any,
-	Settings: any,
-	Spectate: any,
-	Server: any,
-	Unload: () -> (),
-}
-
-function Interface.simpleCallbacks(dependencies: SimpleInterfaceDependencies): { [string]: (...any) -> () }
-	local window, settings = dependencies.Window, dependencies.Settings
-	return {
-		["Open Coin Farm"] = function() window:SelectTab("Coin Farm") end,
-		["Open Combat"] = function() window:SelectTab("Combat") end,
-		Fullbright = function(enabled: any) dependencies.Visuals.Fullbright(enabled) end,
-		FpsCap = function(value: any) settings.SetFps(value) end,
-		No3D = function(enabled: any) settings.Set3D(not enabled) end,
-		LowGraphics = function(enabled: any) settings.LowGraphics(enabled) end,
-		["Stop Spectating"] = function() dependencies.Spectate.Set(nil) end,
-		Rejoin = function() dependencies.Server.Rejoin() end,
-		Theme = function(theme: any) dependencies.Library:SetTheme(theme) end,
-		UIAcrylic = function(enabled: any) Appearance.setBackgroundBlur(dependencies.Library, enabled) end,
-		["Unload Hub"] = dependencies.Unload,
-		["Panic"] = function()
-			Lifecycle.panic({
-				Options = dependencies.Options or (dependencies.Library and dependencies.Library.Options),
-				Notify = function(m) Interface.notify(dependencies.Library, m) end,
-			})
-		end,
-	}
-end
-
-function Interface.movementCallbacks(dependencies: MovementInterfaceDependencies): { [string]: (...any) -> () }
-	local movement, input, options = dependencies.Movement, dependencies.Input, dependencies.Options
-	return {
-		Noclip = function(enabled: any)
-			if not enabled then movement.SetNoclip(false) end
-		end,
-		FlyKey = function()
-			if input:GetFocusedTextBox() or not options.Fly then return end
-			local option = options.Fly
-			local setValue = option.SetValue
-			setValue(option, not options.Fly.Value)
-		end,
-		NoclipKey = function()
-			if input:GetFocusedTextBox() or not options.Noclip then return end
-			local option = options.Noclip
-			local setValue = option.SetValue
-			setValue(option, not options.Noclip.Value)
-		end,
-	}
-end
-
-export type ConfigInterfaceDependencies = {
-	ReadOption: (string, any) -> any,
-	Notify: (string) -> (),
-	EnsureFolder: (any) -> (),
-	Paths: any,
-	WriteJson: (any, any) -> any,
-	ReadJson: (any) -> any,
-	Config: any,
-	Ui: any,
-	DeleteFile: any,
-	Clipboard: any,
-	Print: (...any) -> (),
-}
-
-function Interface.configCallbacks(dependencies: ConfigInterfaceDependencies): { [string]: () -> () }
-	local config, paths = dependencies.Config, dependencies.Paths
-
-	return {
-		["Save Config"] = function()
-			local name = Config.name(dependencies.ReadOption("_ConfigName", ""))
-			if not name then
-				dependencies.Notify("Enter a config name")
-				return
-			end
-
-			dependencies.EnsureFolder(paths.Root)
-			dependencies.EnsureFolder(paths.Game)
-			dependencies.EnsureFolder(paths.Configs)
-			if not dependencies.WriteJson(paths.Configs .. "/" .. name .. ".json", config.Collect()) then
-				dependencies.Notify("Saving is not supported by your executor")
-				return
-			end
-
-			dependencies.Notify("Config saved: " .. name)
-			local list = dependencies.Ui.ConfigList
-			local setValues = list.SetValues
-			setValues(list, config.List())
-		end,
-		["Load Config"] = function()
-			local name = dependencies.ReadOption("_ConfigSelect", nil)
-			if not name then
-				dependencies.Notify("Select a config")
-				return
-			end
-
-			local data = dependencies.ReadJson(paths.Configs .. "/" .. name .. ".json")
-			if not data then
-				dependencies.Notify("Could not read " .. name)
-				return
-			end
-
-			local applied, skipped = config.Apply(data)
-			dependencies.Notify(string.format("Loaded %s (%d settings%s)", name, applied, Config.skippedSuffix(skipped)))
-		end,
-		["Delete Config"] = function()
-			local name = dependencies.ReadOption("_ConfigSelect", nil)
-			if not name or not dependencies.DeleteFile then
-				dependencies.Notify("Select a config")
-				return
-			end
-
-			pcall(dependencies.DeleteFile, paths.Configs .. "/" .. name .. ".json")
-			local list = dependencies.Ui.ConfigList
-			local setValues = list.SetValues
-			setValues(list, config.List())
-			dependencies.Notify("Deleted " .. name)
-		end,
-		["Export Config"] = function()
-			local code = config.Export()
-			if dependencies.Clipboard then
-				(dependencies.Clipboard :: any)(code)
-				dependencies.Notify("Config code copied")
-				return
-			end
-
-			dependencies.Print(code)
-			dependencies.Notify("Clipboard not supported | code printed in console")
-		end,
-		["Import Config"] = function()
-			local ok, applied, skipped = config.Import(dependencies.ReadOption("_ConfigImport", ""))
-			if not ok then
-				dependencies.Notify("Import failed: " .. tostring(applied))
-				return
-			end
-
-			dependencies.Notify(string.format("Config imported (%d settings%s)", applied, Config.skippedSuffix(skipped)))
-		end,
-	}
-end
-
-function Interface.create(dependencies: InterfaceDependencies): any
-	local library = dependencies.Library
-	local tabs = {}
-	local controls = {}
-	local window = library:CreateWindow({
-		Acrylic = true,
-		MinSize = dependencies.NewVector2(760, 520),
-		MinimizeKey = dependencies.MenuKey,
-		Resize = true,
-		Size = dependencies.NewUDim2(0, 1080, 0, 740),
-		StatusBar = true,
-		SubTitle = "MM2  ·  Apex",
-		TabWidth = 168,
-		Theme = "Cobalt",
-		Title = "Apex Hub",
-		ToggleButton = true,
-	})
-	if dependencies.OnWindow then dependencies.OnWindow(window) end
-	window:Divider("HOME")
-	tabs["Overview"] = window:CreateTab({ Icon = "layout-dashboard", Title = "Overview" })
-	window:Divider("GAME")
-	tabs["Coin Farm"] = window:CreateTab({ Icon = "coins", Title = "Coin Farm" })
-	tabs["Combat"] = window:CreateTab({ Icon = "swords", Title = "Combat" })
-	tabs["Visuals"] = window:CreateTab({ Icon = "eye", Title = "Visuals" })
-	tabs["Movement"] = window:CreateTab({ Icon = "move", Title = "Movement" })
-	window:Divider("EVENT")
-	tabs["Event"] = window:CreateTab({ Icon = "ghost", Title = "Event" })
-	window:Divider("SYSTEM")
-	tabs["Notifications"] = window:CreateTab({ Icon = "bell", Title = "Notifications" })
-	tabs["Misc"] = window:CreateTab({ Icon = "wrench", Title = "Misc" })
-	tabs["Settings"] = window:CreateTab({ Icon = "settings", Title = "Settings" })
-
-	local layoutTabs = tabs
-	local throttle = dependencies.Throttle
-	if throttle then
-		layoutTabs = {}
-		for name, tab: any in pairs(tabs) do
-			layoutTabs[name] = setmetatable({}, { __index = function(_, side)
-				return function(_, ...)
-					throttle()
-					local section = tab[side](tab, ...)
-					throttle()
-					return setmetatable({}, { __index = function(_, method)
-						return function(_, ...)
-							throttle()
-							local result = section[method](section, ...)
-							throttle()
-							return result
-						end
-					end })
-				end
-			end })
-		end
-	end
-	buildOverviewInterface(layoutTabs, controls, dependencies)
-	buildCoinFarmInterface(layoutTabs, controls, dependencies)
-	buildCombatInterface(layoutTabs, controls, dependencies)
-	buildVisualsInterface(layoutTabs, controls, dependencies)
-	buildMovementInterface(layoutTabs, controls, dependencies)
-	buildEventInterface(layoutTabs, controls, dependencies)
-	buildNotificationsInterface(layoutTabs, controls, dependencies)
-	buildMiscInterface(layoutTabs, controls, dependencies)
-	local function finishSettings() buildSettingsInterface(layoutTabs, controls, dependencies) end
-	if not dependencies.DeferSettings then finishSettings() end
-
-	return { Window = window, Tabs = tabs, Controls = controls, FinishSettings = finishSettings }
-end
-
-function Application.createInterface(dependencies: any): any
-	local window: any, ui: any
-	local windowProxy = {
-		SelectTab = function(_, name) return window:SelectTab(name) end,
-	}
-	local uiProxy = setmetatable({}, { __index = function(_, name) return ui[name] end })
-	local function notify(message: any) Interface.notify(dependencies.Library, message) end
-	local function showResult(success: any, failure: any, message: any)
-		Interface.showResult(notify, success, failure, message)
-	end
-	local function schedule(callback: () -> ())
-		Lifecycle.schedule(dependencies.Spawn, dependencies.Protect, callback)
-	end
-	local function localParts() return Characters.localParts(dependencies.Player) end
-	local function selected(name: string) return Interface.selectedPlayer(dependencies.ReadOption, dependencies.Players, name) end
-	local function ensureFolder(path: any) Config.ensureFolder(dependencies.IsFolder, dependencies.MakeFolder, path) end
-	local function writeJson(path: any, data: any)
-		return Config.writeJson(ensureFolder, dependencies.Support.Paths, dependencies.Http, dependencies.WriteFile, path, data)
-	end
-	local function readJson(path: any) return Config.readJson(dependencies.Http, dependencies.IsFile, dependencies.ReadFile, path) end
-	local callbacks: any = {}
-	for _, group in {
-		Interface.simpleCallbacks({
-			Window = windowProxy, Library = dependencies.Library, Visuals = dependencies.Visuals,
-			Settings = dependencies.Settings, Spectate = dependencies.Support.Spectate, Server = dependencies.Support.Server,
-			Unload = function() dependencies.State.Unload() end,
-		}),
-		Interface.movementCallbacks({ Movement = dependencies.Movement, Input = dependencies.Input, Options = dependencies.Options }),
-		Interface.combatCallbacks({
-			Round = dependencies.Round, Combat = dependencies.Combat, Spawn = dependencies.Spawn,
-			ShowMessage = notify, ShowResult = showResult,
-			ReadOption = dependencies.ReadOption,
-			Panic = function()
-				Lifecycle.panic({
-					Options = dependencies.Options,
-					Mover = dependencies.Mover,
-					Farm = dependencies.Farm,
-					Movement = dependencies.Movement,
-					Combat = dependencies.Combat,
-					Player = dependencies.Player,
-					Notify = notify,
-				})
-			end,
-		}),
-		Interface.teleportCallbacks({
-			Round = dependencies.Round, Lobby = dependencies.Locations.LobbySpawn, Map = dependencies.Locations.SpawnPoint,
-			PlayerPosition = function(player) return Movement.playerFrame(Characters.parts :: any, dependencies.NewFrame, player) end,
-			ObjectPosition = Inventory.position, Offset = dependencies.NewVector(0, 3.200000047683716, 0),
-			NewFrame = dependencies.NewFrame, ReadOption = selected,
-			Teleport = function(frame) return Movement.teleport(localParts, dependencies.Mover, dependencies.Zero, frame) end,
-			ShowMessage = notify, ShowResult = showResult,
-		}),
-		Interface.eventCallbacks({ Event = dependencies.Event, Schedule = schedule, ShowMessage = notify }),
-		Interface.miscCallbacks({
-			Popups = dependencies.Support.Popups, Round = dependencies.Round, Spectate = dependencies.Support.Spectate,
-			Schedule = schedule, ReadOption = selected, ShowMessage = notify, ShowResult = showResult,
-		}),
-		Interface.serverCallbacks(dependencies.Support.Server, schedule, showResult),
-		Interface.webhookCallbacks({
-			Webhook = dependencies.Support.Webhook, Notify = notify, Schedule = schedule,
-			Decorate = dependencies.Support.Decorate, Summary = dependencies.Support.Summary,
-		}),
-		Interface.configCallbacks({
-			ReadOption = dependencies.ReadOption, Notify = notify, EnsureFolder = ensureFolder,
-			Paths = dependencies.Support.Paths, WriteJson = writeJson, ReadJson = readJson,
-			Config = dependencies.Support.Config, Ui = uiProxy, DeleteFile = dependencies.DeleteFile,
-			Clipboard = dependencies.Clipboard, Print = dependencies.Print,
-		}),
-	} do
-		for name, callback in pairs(group) do callbacks[name] = callback end
-	end
-	local result = Interface.create({
-		Library = dependencies.Library,
-		Callbacks = callbacks,
-		OnWindow = function(value) window = value end,
-		PlayerOptions = function() return Interface.playerOptions(dependencies.Players, dependencies.Player) end,
-		ConfigOptions = dependencies.Support.Config.List,
-		Throttle = dependencies.Throttle,
-		DeferSettings = dependencies.DeferSettings,
-		NewColor3 = dependencies.NewColor,
-		NewVector2 = dependencies.NewVector2,
-		NewUDim2 = dependencies.NewUDim2,
-		MenuKey = dependencies.MenuKey,
-	})
-	ui = Interface.createState(result.Controls, dependencies.Keybind, dependencies.Options, dependencies.Library)
-	local function finish()
-		if not dependencies.DeferSettings then return end
-		result.FinishSettings()
-		ui.ConfigList = result.Controls._ConfigSelect
-	end
-	return { Window = result.Window, Tabs = result.Tabs, Controls = result.Controls, Ui = ui, Finish = finish, Notify = notify, ShowResult = showResult }
-end
-
-function Application.runRuntime(dependencies: any)
-	local round, farm, combat = dependencies.Round, dependencies.Farm, dependencies.Combat
-	local esp, movement, support = dependencies.Esp, dependencies.Movement, dependencies.Support
-	local readOption, readNumber, ready = dependencies.ReadOption, dependencies.ReadNumber, dependencies.Ready
-	local function localParts() return Characters.localParts(dependencies.Player) end
-	local function gunAdded(gun: any) Round.gunAdded(round, readOption, dependencies.Notify, gun) end
-	local function watchMap(map: any) Round.watchMap(round, dependencies.Protect, gunAdded, map) end
-	local function refreshPlayers()
-		Interface.refreshPlayers(function() return Interface.playerOptions(dependencies.Players, dependencies.Player) end, dependencies.Ui)
-	end
-	local cache = {}
-	local activeInterface: any
-	local function setContent(control: any, value: any) Interface.setContent(cache, control, value) end
-	local function setValue(control: any, value: any) Interface.setValue(cache, control, value) end
-	local function populateServers()
-		Server.populate(support.Server, dependencies.Window, math.min, dependencies.Teleport, dependencies.Game, dependencies.Player)
-	end
-	Lifecycle.startRuntime({
-		Spawn = dependencies.Spawn,
-		Protect = dependencies.Protect,
-		IsRunning = dependencies.IsRunning,
-		Log = dependencies.Log,
-		Wait = dependencies.Wait,
-		Farm = function()
-			Farm.run({ IsRunning = dependencies.IsRunning, Farm = farm, Mover = dependencies.Mover, Wait = dependencies.Wait, Log = dependencies.Log })
-		end,
-		InstallHooks = dependencies.Hooks.Install,
-		Combat = function()
-			Combat.step({
-				Combat = combat, Round = round, Player = dependencies.Player, Quest = dependencies.Quest,
-				ReadOption = readOption, Ready = ready, ReadNumber = readNumber,
-				CharacterParts = Characters.parts :: any, ObjectPosition = Inventory.position,
-			})
-		end,
-		Esp = esp.Update,
-		Fullbright = dependencies.VisualsStep,
-		Movement = dependencies.MovementStep,
-		Event = function() Event.step(dependencies.Event, readOption, ready) end,
-		Popups = function() Popups.step(readOption, support.Popups) end,
-		Quests = dependencies.Quest.Refresh,
-		Webhook = support.WebhookStep,
-		PrepareSummary = function() dependencies.SummaryTimer.LastSummary = dependencies.Clock() end,
-		Summary = function() Webhook.summaryStep(dependencies.SummaryTimer, readOption, dependencies.Clock, support.Summary) end,
-		Stats = function() Webhook.statsStep(support.Candy, dependencies.Stats, dependencies.Event, support.Webhook, support.Fields) end,
-		ConnectGameplay = function()
-			Round.connectGameplay(dependencies.Gameplay, dependencies.State, dependencies.Protect, {
-				RoleSelect = function(role)
-					Round.roleSelected(round, dependencies.Stats, farm, function(seconds, callback)
-						Lifecycle.delay(dependencies.Delay, dependencies.Protect, seconds, callback)
-					end, function() return Round.roleDetails(round) end, readOption, dependencies.Notify, support.Webhook, Quest.formatName, role)
-				end,
-				CoinsStarted = function(data) Round.coinsStarted(round, farm, data) end,
-				CoinCollected = function(id, amount, limit)
-					Round.coinCollected(round, dependencies.Stats, farm, dependencies.Notify, support.Webhook, support.Fields, id, amount, limit)
-				end,
-				VictoryScreen = function(first, message, title)
-					Round.victory(round, support.Webhook, support.Fields, Quest.formatName, first, message, title)
-				end,
-				PlayerDataChanged = function(data) Round.playerDataChanged(round, data) end,
-			})
-		end,
-		PrepareInterface = function()
-			activeInterface = dependencies.PrepareInterface()
-			dependencies.Ui, dependencies.Window = activeInterface.Ui, activeInterface.Window
-			activeInterface.Window:SetServerTitle("Murder Mystery 2 servers")
-			activeInterface.Window:OnServerRefresh(function() Lifecycle.schedule(dependencies.Spawn, dependencies.Protect, populateServers) end)
-		end,
-		FinishInterface = function() activeInterface.Finish() end,
-		PopulateServers = populateServers,
-		Interface = function()
-			Interface.update({
-				Farm = farm, FormatNumber = Event.formatNumber, Stats = dependencies.Stats, SetContent = setContent,
-				Ui = dependencies.Ui, SetValue = setValue, Candy = support.Candy, Round = round, Player = dependencies.Player,
-				Event = dependencies.Event, FormatName = Quest.formatName, Minimum = math.min, ReadOption = readOption, Quest = dependencies.Quest,
-			})
-		end,
-		Autosave = support.Config.Autosave,
-		RestoreConfig = dependencies.RestoreConfig,
-		State = dependencies.State,
-		Players = dependencies.Players,
-		RunService = dependencies.RunService,
-		Input = dependencies.Input,
-		Player = dependencies.Player,
-		Workspace = dependencies.Workspace,
-		GuiService = dependencies.GuiService,
-		Library = dependencies.Library,
-		RemoveEsp = esp.Remove,
-		HasDrawing = esp.HasDrawing,
-		Tracers = esp.Tracers,
-		NoclipFrame = function() if not combat.Flinging then Movement.noclipFrame(readOption, movement) end end,
-		JumpRequest = function() Movement.jumpRequest(readOption, localParts, dependencies.Jumping) end,
-		InputBegan = function(input, processed)
-			Movement.clickTeleport({
-				ReadOption = readOption, GetBind = dependencies.Keybind, Options = dependencies.Options, Input = dependencies.Input,
-				Player = dependencies.Player, LocalParts = localParts, MouseButton = dependencies.MouseButton, KeyCodes = dependencies.KeyCodes,
-				NewFrame = dependencies.NewFrame, Offset = dependencies.NewVector(0, 3.200000047683716, 0), Zero = dependencies.Zero,
-			}, input, processed)
-		end,
-		CharacterAdded = function() Movement.characterAdded(movement) end,
-		WatchMap = watchMap,
-		ChildAdded = function(child) Round.childAdded(gunAdded, watchMap, child) end,
-		ChildRemoved = function(child) Round.childRemoved(round, child) end,
-		Disconnected = function()
-			Lifecycle.disconnected({
-				Service = dependencies.GuiService, Ready = ready, Webhook = support.Webhook, Fields = support.Fields,
-				State = dependencies.State, ReadOption = readOption, Delay = dependencies.Delay, Teleport = dependencies.Teleport,
-				Game = dependencies.Game, Player = dependencies.Player, QueueTeleport = dependencies.QueueTeleport,
-			})
-		end,
-		Idled = function() Lifecycle.idled(readOption, dependencies.VirtualUser, dependencies.Zero2) end,
-		PlayerAdded = function() Interface.playerAdded(dependencies.Delay, refreshPlayers) end,
-		PlayerRemoving = function(player) Interface.playerRemoving(support.Spectate, dependencies.Delay, refreshPlayers, player) end,
-		Unload = dependencies.Unload,
-	})
-end
-
-function Application.start(host: any, uiSource: string?, loadLibrary: ((any) -> any)?): any
-	local environment, diagnostics = Application.createEnvironment(host, uiSource)
-	local gameObject = environment.game
-	local function service(name: string) return environment.cloneref(gameObject:GetService(name)) end
-	-- the sandbox environment is rebuilt on every execution, so the previous run lives in the REAL genv
-	local realEnv: any = if type(host.getgenv) == "function" then (host.getgenv :: any)() else host
-	pcall(Lifecycle.resetPrevious, realEnv)
-	Lifecycle.resetPrevious(environment)
-	local coreGui = service("CoreGui")
-	Application.cleanCoreGui(coreGui)
-	Application.waitForGame(gameObject)
-	local players = service("Players")
-	local player = players.LocalPlayer
-	local workspace = environment.workspace
-	local runService = service("RunService")
-	local storage = service("ReplicatedStorage")
-	local input = service("UserInputService")
-	local teleport = service("TeleportService")
-	local guiService = service("GuiService")
-	local lighting = service("Lighting")
-	local virtualUser = service("VirtualUser")
-	local http = service("HttpService")
-	local state, session = Lifecycle.initializeSession(environment, http)
-	pcall(function() realEnv.ApexHub = state end)
-	local clock, wait = environment.os.clock, environment.task.wait
-	local function isRunning() return Lifecycle.isRunning(state, environment.getgenv, session) end
-	local function log(message: any) Lifecycle.log(state, environment.os.date, message) end
-	local function protect(callback: (...any) -> ...any, ...: any) return Lifecycle.protect(log, callback, ...) end
-	local timers: any = {}
-	local function ready(key: string, interval: number) return Lifecycle.ready(timers, clock, key, interval) end
-	local throttleState = { LastYield = clock() }
-	local function throttle() Config.throttle(throttleState, clock, wait) end
-	local library = if loadLibrary then loadLibrary(environment) else host.setfenv(Interface.loadLibrary, environment)()
-	local options = library.Options
-	state.Options = options
-	throttle()
-	local gameplay = Application.gameplayRemotes(storage)
-	throttle()
-	local function readOption(name: string, default: any) return Options.read(options, name, default) end
-	local function readNumber(name: string, default: number) return Options.readNumber(readOption, name, default) end
-	local function keybind(option: any) return Config.keybind(option, environment.typeof, environment.Enum.KeyCode) end
-	local function ping() return Network.ping(player) end
-	local vector, frame = environment.Vector3.new, environment.CFrame.new
-	local zero = vector(0, 0, 0)
-	local groundParameters, exposureParameters = Application.createRaycastParameters(environment.RaycastParams.new, function()
-		return environment.Enum.RaycastFilterType.Exclude
-	end)
-	local stats = Lifecycle.createStats(environment.os.time)
-	local gameState = Application.createGameState({
-		Storage = storage, Require = environment.require, Players = players, Player = player,
-		Workspace = workspace, Clock = clock, Wait = wait, ReadOption = readOption,
-	})
-	local automation = Application.createAutomation({
-		Player = player, Players = players, Round = gameState.Round, Quest = gameState.Quest,
-		Workspace = workspace, Heartbeat = runService.Heartbeat, GroundParameters = groundParameters,
-		ExposureParameters = exposureParameters, Clock = clock, Wait = wait, NewVector = vector,
-		NewFrame = frame, Zero = zero, TypeOf = environment.typeof, ReadOption = readOption,
-		ReadNumber = readNumber, IsRunning = isRunning, Ping = ping, Touch = environment.firetouchinterest,
-	})
-	local controllers = Application.createControllers({
-		Player = player, Players = players, Round = gameState.Round, Mover = automation.Mover,
-		NewInstance = environment.Instance.new, RunService = runService, Workspace = workspace, Input = input,
-		KeyCodes = environment.Enum.KeyCode, NewVector = vector, Zero = zero, ReadOption = readOption,
-		ReadNumber = readNumber, IsRunning = isRunning, Clock = clock, Ping = ping, Wait = wait, Stats = stats,
-		NewFrame = frame, LookAt = environment.CFrame.lookAt, GroundParameters = groundParameters, Log = log,
-		Weapons = gameState.Weapons, HookCache = Hooks.cache(environment),
-	})
-	local visual = Application.createVisuals({
-		Player = player, Players = players, Round = gameState.Round, Options = options, CoreGui = coreGui,
-		Lighting = lighting, NewColor = environment.Color3.new, NewInstance = environment.Instance.new,
-		NewUDim2 = environment.UDim2.new, NewVector = vector, NewVector2 = environment.Vector2.new,
-		DepthMode = function() return environment.Enum.HighlightDepthMode.AlwaysOnTop end,
-		Font = function() return environment.Enum.Font.GothamBold end,
-		Drawing = environment.Drawing, TypeOf = environment.typeof, ReadOption = readOption, ReadNumber = readNumber,
-		Workspace = workspace, RunService = runService, SetFpsCap = environment.setfpscap, Throttle = throttle,
-		GetSettings = function() return environment.settings() end,
-		LowestQuality = function() return environment.Enum.QualityLevel.Level01 end,
-	})
-	visual.Esp.Notify = function(message) Interface.notify(library, message) end
-	local support = Application.createSupport({
-		Player = player, Players = players, Game = gameObject, Workspace = workspace, Event = gameState.Event,
-		Stats = stats, Teleport = teleport, Http = http, DateTime = environment.DateTime, ReadOption = readOption,
-		Request = environment.request, Clock = clock, Time = environment.os.time, Log = log, Random = environment.math.random,
-		Options = options, TypeOf = environment.typeof, KeyCodes = environment.Enum.KeyCode,
-		FromHex = environment.Color3.fromHex, Throttle = throttle, IsFolder = environment.isfolder,
-		MakeFolder = environment.makefolder, WriteFile = environment.writefile, ListFiles = environment.listfiles,
-		GetConnections = environment.getconnections, FireSignal = environment.firesignal,
-	})
-	local interface: any
-	local function prepareInterface()
-		throttle()
-		interface = Application.createInterface({
-			Library = library, Options = options, State = state, Player = player, Players = players,
-			ReadOption = readOption, Input = input, Movement = controllers.Movement, Round = gameState.Round,
-			Combat = controllers.Combat, Mover = automation.Mover, Farm = automation.Farm, Event = gameState.Event, Visuals = visual.Visuals,
-			Settings = visual.Settings, Support = support, Locations = automation.Locations,
-			Spawn = environment.task.spawn, Protect = protect, Http = http, IsFolder = environment.isfolder,
-			MakeFolder = environment.makefolder, IsFile = environment.isfile, ReadFile = environment.readfile,
-			WriteFile = environment.writefile, DeleteFile = environment.delfile, Clipboard = environment.setclipboard,
-			NewFrame = frame, NewVector = vector, Zero = zero, NewColor = environment.Color3.new,
-			NewVector2 = environment.Vector2.new, NewUDim2 = environment.UDim2.new,
-			MenuKey = environment.Enum.KeyCode.RightShift, Keybind = keybind, Print = environment.print,
-			Throttle = throttle, DeferSettings = true,
-		})
-		return interface
-	end
-	local mobileHandle: any
-	local function unload()
-		pcall(function() controllers.Combat.HitboxRestore() end)
-		if mobileHandle then
-			pcall(mobileHandle.Destroy)
-			mobileHandle = nil
-		end
-		Lifecycle.unload({
-			State = state, Mover = automation.Mover, Farm = automation.Farm, Movement = controllers.Movement,
-			Hooks = controllers.Hooks, Esp = visual.Esp, Visuals = visual.Visuals, Settings = visual.Settings,
-			Spectate = support.Spectate, LocalParts = function() return Characters.localParts(player) end,
-			Round = gameState.Round, Library = library,
-		})
-	end
-	local function restoreConfig()
-		Config.restore(support.Config, support.Paths, function(path)
-			return Config.readJson(http, environment.isfile, environment.readfile, path)
-		end, options, environment)
-	end
-	Application.runRuntime({
-		State = state, Round = gameState.Round, Farm = automation.Farm, Combat = controllers.Combat, Gameplay = gameplay,
-		Mover = automation.Mover, Movement = controllers.Movement, Support = support, Esp = visual.Esp,
-		Player = player, Players = players, Workspace = workspace, RunService = runService, Input = input,
-		GuiService = guiService, Library = library, Quest = gameState.Quest, Event = gameState.Event,
-		ReadOption = readOption, ReadNumber = readNumber, Ready = ready, Options = options, Keybind = keybind,
-		Jumping = function() return environment.Enum.HumanoidStateType.Jumping end,
-		MouseButton = function() return environment.Enum.UserInputType.MouseButton1 end,
-		KeyCodes = function() return environment.Enum.KeyCode end, NewFrame = frame, NewVector = vector,
-		Zero = zero, Zero2 = environment.Vector2.new(0, 0), VirtualUser = virtualUser, Game = gameObject, Teleport = teleport, Stats = stats,
-		SummaryTimer = {}, Hooks = controllers.Hooks, VisualsStep = visual.VisualsStep,
-		MovementStep = controllers.MovementStep, IsRunning = isRunning, Clock = clock, Log = log, Wait = wait,
-		Spawn = environment.task.spawn, Protect = protect, Delay = environment.task.delay,
-		Notify = function(message) Interface.notify(library, message) end, PrepareInterface = prepareInterface,
-		QueueTeleport = environment.queue_on_teleport, Unload = unload, RestoreConfig = restoreConfig,
-	})
-	Lifecycle.finishSession(state, {
-		Stats = stats, Combat = controllers.Combat, Spectate = support.Spectate, Opti = visual.Settings,
-		ESP = visual.Esp, Round = gameState.Round, Quest = gameState.Quest, Server = support.Server,
-		Move = controllers.Movement, SilentAim = controllers.Hooks, Mover = automation.Mover,
-		Event = gameState.Event, Config = support.Config, Farm = automation.Farm, Webhook = support.Webhook,
-		Popups = support.Popups, World = visual.Visuals,
-	}, environment.os.date)
-	pcall(function() library:SetTheme("Cobalt") end)
-	interface.Window:SelectTab(1)
-
-	-- Panic helper
-
-	local function panic()
-		Lifecycle.panic({
-			Options = options,
-			Mover = automation and automation.Mover,
-			Farm = automation and automation.Farm,
-			Movement = controllers and controllers.Movement,
-			Combat = controllers and controllers.Combat,
-			Player = player,
-			Notify = function(msg) Interface.notify(library, msg) end,
-		})
-	end
-
-	-- Quick panel (touch-friendly)
-	do
-
-		local okMobile, mobileResult = pcall(Mobile.create, {
-			Player = player,
-			Options = options,
-			Combat = controllers and controllers.Combat,
-			ReadNumber = readNumber,
-			Library = library,
-			Window = function() return interface and interface.Window end,
-			Input = input,
-			Panic = panic,
-			Notify = function(message) Interface.notify(library, message) end,
-		})
-		if okMobile then
-			mobileHandle = mobileResult
-		else
-			log("Quick panel failed: " .. tostring(mobileResult))
-		end
-	end
-
-
-	-- Runtime extras: godmode / invis / evade / hitbox
-	environment.task.spawn(function()
-		local wasInvisible = false
-		while isRunning() do
-			pcall(function()
-				if readOption("Godmode", false) then
-					Movement.applyGodmode(player, true)
-				end
-				local wantInvis = readOption("Invisibility", false)
-				if wantInvis then
-					Movement.applyInvisibility(player, true)
-					wasInvisible = true
-				elseif wasInvisible then
-					Movement.applyInvisibility(player, false)
-					wasInvisible = false
-				end
-				local combatController = controllers and controllers.Combat
-				if combatController and gameState then
-					if not combatController.Flinging then
-						Movement.autoEvadeTick({
-							ReadOption = readOption,
-							ReadNumber = readNumber,
-							Round = gameState.Round,
-							Player = player,
-						})
-					end
-					if readOption("HitboxExpand", false) and combatController.HitboxExpand then
-						combatController.HitboxExpand(readNumber("HitboxSize", 6))
-					elseif combatController.HitboxActive and combatController.HitboxRestore then
-						combatController.HitboxRestore()
-					end
-				end
-			end)
-			wait(0.2)
-		end
-	end)
-
-	-- anti fling must run every frame, a 0.2s tick is far too slow to stop a fling
-	table.insert(state.Connections, runService.Heartbeat:Connect(function()
-		if readOption("AntiFling", false) and not (controllers.Combat and controllers.Combat.Flinging) then
-			pcall(Movement.antiFlingTick, player)
-		end
-	end))
-
-	Interface.notify(library, "Apex Hub ready  ·  MM2")
-	return diagnostics
-end
-
-
-
--- ============================================================
--- Mobile / Quick Panel GUI  (tabbed, animated, draggable)
--- ============================================================
-
-function Mobile.create(dependencies)
-	local player = dependencies.Player
-	local options = dependencies.Options or {}
-	local notify = dependencies.Notify or function() end
-	local TweenService = game:GetService("TweenService")
-	local UserInputService = dependencies.Input or game:GetService("UserInputService")
-	local playerGui = player:FindFirstChildOfClass("PlayerGui") or player:WaitForChild("PlayerGui")
-
-	local hiddenRoot
-	pcall(function()
-		if gethui then hiddenRoot = gethui() end
-	end)
-	local parent = hiddenRoot or playerGui
-
-	-- kill leftovers from a previous execution
-	for _, container in ipairs({ parent, playerGui }) do
-		for _, child in ipairs(container:GetChildren()) do
-			if child.Name == "ApexMobile" then
-				pcall(function() child:Destroy() end)
-			end
-		end
-	end
-
-	local C = {
-		Bg = Color3.fromRGB(11, 12, 19),
-		Panel = Color3.fromRGB(16, 18, 28),
-		Row = Color3.fromRGB(23, 26, 39),
-		RowHover = Color3.fromRGB(29, 33, 49),
-		RowOn = Color3.fromRGB(26, 31, 54),
-		Stroke = Color3.fromRGB(42, 48, 72),
-		Text = Color3.fromRGB(236, 239, 250),
-		Sub = Color3.fromRGB(139, 147, 178),
-		Muted = Color3.fromRGB(88, 96, 128),
-		Accent = Color3.fromRGB(99, 115, 255),
-		Accent2 = Color3.fromRGB(146, 92, 255),
-		On = Color3.fromRGB(64, 208, 148),
-		Off = Color3.fromRGB(48, 53, 76),
-		Danger = Color3.fromRGB(240, 82, 100),
-		Warn = Color3.fromRGB(242, 178, 72),
-	}
-
-	local alive = true
-	local connections = {}
-	local syncers = {}
-
-	local function track(connection)
-		table.insert(connections, connection)
-		return connection
-	end
-
-	local function new(class, props, parentObject)
-		local object = Instance.new(class)
-		for key, value in pairs(props or {}) do
-			object[key] = value
-		end
-		if parentObject then object.Parent = parentObject end
-		return object
-	end
-
-	local function tween(object, props, duration, style)
-		pcall(function()
-			TweenService:Create(object, TweenInfo.new(duration or 0.16, style or Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props):Play()
-		end)
-	end
-
-	local function corner(object, radius)
-		return new("UICorner", { CornerRadius = UDim.new(0, radius) }, object)
-	end
-
-	local function stroke(object, color, thickness, transparency)
-		return new("UIStroke", {
-			Color = color,
-			Thickness = thickness or 1,
-			Transparency = transparency or 0,
-			ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-		}, object)
-	end
-
-	local function text(parentObject, props)
-		props.BackgroundTransparency = 1
-		props.BorderSizePixel = 0
-		return new("TextLabel", props, parentObject)
-	end
-
-	-- ---------- root ----------
-	local screen = new("ScreenGui", {
-		Name = "ApexMobile",
-		ResetOnSpawn = false,
-		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-		IgnoreGuiInset = true,
-		DisplayOrder = 999,
-	})
-	local okParent = pcall(function() screen.Parent = parent end)
-	if not okParent or not screen.Parent then screen.Parent = playerGui end
-
-	local viewport = screen.AbsoluteSize
-	if viewport.X < 100 or viewport.Y < 100 then viewport = Vector2.new(1280, 720) end
-
-	local panelW = math.min(332, viewport.X - 16)
-	local panelH = math.min(486, viewport.Y - 24)
-	local HEADER_H, TABS_H, FOOTER_H = 62, 46, 62
-
-	-- soft shadow (plain frames: no asset ids needed)
-	local shadow = new("Frame", {
-		Name = "Shadow",
-		Size = UDim2.fromOffset(panelW + 14, panelH + 14),
-		Position = UDim2.fromOffset(math.max(8, viewport.X - panelW - 12) - 7, math.max(12, (viewport.Y - panelH) / 2) - 3),
-		BackgroundColor3 = Color3.new(0, 0, 0),
-		BackgroundTransparency = 0.8,
-		BorderSizePixel = 0,
-		Visible = UserInputService.TouchEnabled,
-	}, screen)
-	corner(shadow, 22)
-
-	local panel = new("Frame", {
-		Name = "Panel",
-		Size = UDim2.fromOffset(panelW, panelH),
-		Position = UDim2.fromOffset(math.max(8, viewport.X - panelW - 12), math.max(12, (viewport.Y - panelH) / 2)),
-		BackgroundColor3 = C.Bg,
-		BorderSizePixel = 0,
-		Active = true,
-		ClipsDescendants = true,
-		Visible = UserInputService.TouchEnabled,
-	}, screen)
-	corner(panel, 16)
-	local panelStroke = stroke(panel, C.Stroke, 1.2, 0)
-	new("UIGradient", {
-		Color = ColorSequence.new({
-			ColorSequenceKeypoint.new(0, C.Accent),
-			ColorSequenceKeypoint.new(1, C.Accent2),
-		}),
-		Rotation = 90,
-		Transparency = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 0.55),
-			NumberSequenceKeypoint.new(0.35, 0.9),
-			NumberSequenceKeypoint.new(1, 0.9),
-		}),
-	}, panelStroke)
-	local panelScale = new("UIScale", { Scale = 1 }, panel)
-
-	-- keep the shadow glued to the panel
-	local function syncShadow()
-		shadow.Size = UDim2.fromOffset(panel.AbsoluteSize.X + 14, panel.AbsoluteSize.Y + 14)
-		local position = panel.Position
-		shadow.Position = UDim2.fromOffset(position.X.Offset - 7, position.Y.Offset - 3)
-		shadow.Visible = panel.Visible
-	end
-	track(panel:GetPropertyChangedSignal("Position"):Connect(syncShadow))
-	track(panel:GetPropertyChangedSignal("Visible"):Connect(syncShadow))
-
-	-- ---------- header ----------
-	local header = new("Frame", {
-		Name = "Header",
-		Size = UDim2.new(1, 0, 0, HEADER_H),
-		BackgroundColor3 = C.Panel,
-		BorderSizePixel = 0,
-		Active = true,
-	}, panel)
-	new("UIGradient", { Color = ColorSequence.new(C.Panel, C.Bg), Rotation = 90 }, header)
-
-	local logo = new("Frame", {
-		Size = UDim2.fromOffset(36, 36),
-		Position = UDim2.fromOffset(14, 13),
-		BackgroundColor3 = C.Accent,
-		BorderSizePixel = 0,
-	}, header)
-	corner(logo, 10)
-	new("UIGradient", { Color = ColorSequence.new(C.Accent, C.Accent2), Rotation = 45 }, logo)
-	text(logo, {
-		Size = UDim2.new(1, 0, 1, 0), Text = "A", TextSize = 19, Font = Enum.Font.GothamBlack,
-		TextColor3 = Color3.new(1, 1, 1),
-	})
-
-	text(header, {
-		Position = UDim2.fromOffset(60, 11), Size = UDim2.new(1, -130, 0, 20),
-		Text = "APEX HUB", TextSize = 15, Font = Enum.Font.GothamBold, TextColor3 = C.Text,
-		TextXAlignment = Enum.TextXAlignment.Left,
-	})
-
-	local statusDot = new("Frame", {
-		Position = UDim2.fromOffset(61, 38), Size = UDim2.fromOffset(8, 8),
-		BackgroundColor3 = C.Off, BorderSizePixel = 0,
-	}, header)
-	corner(statusDot, 4)
-
-	local subtitle = text(header, {
-		Position = UDim2.fromOffset(76, 33), Size = UDim2.new(1, -140, 0, 18),
-		Text = "Murder Mystery 2  ·  all features off", TextSize = 11, Font = Enum.Font.Gotham,
-		TextColor3 = C.Sub, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
-	})
-
-	local minimize = new("TextButton", {
-		Size = UDim2.fromOffset(32, 32), Position = UDim2.new(1, -46, 0, 15),
-		BackgroundColor3 = C.Row, AutoButtonColor = false, Text = "–", TextSize = 20,
-		Font = Enum.Font.GothamBold, TextColor3 = C.Sub, BorderSizePixel = 0,
-	}, header)
-	corner(minimize, 9)
-	stroke(minimize, C.Stroke, 1, 0.5)
-	track(minimize.MouseEnter:Connect(function() tween(minimize, { BackgroundColor3 = C.RowHover, TextColor3 = C.Text }, 0.1) end))
-	track(minimize.MouseLeave:Connect(function() tween(minimize, { BackgroundColor3 = C.Row, TextColor3 = C.Sub }, 0.1) end))
-
-	new("Frame", {
-		Position = UDim2.new(0, 0, 0, HEADER_H - 1), Size = UDim2.new(1, 0, 0, 1),
-		BackgroundColor3 = C.Stroke, BackgroundTransparency = 0.45, BorderSizePixel = 0,
-	}, panel)
-
-	-- ---------- launcher ----------
-	local launcher = new("TextButton", {
-		Name = "Launcher",
-		Size = UDim2.fromOffset(48, 48),
-		Position = UDim2.fromOffset(viewport.X - 64, math.max(12, viewport.Y * 0.5 - 24)),
-		BackgroundColor3 = C.Accent, AutoButtonColor = false, Text = "A", TextSize = 20,
-		Font = Enum.Font.GothamBlack, TextColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
-		Visible = not panel.Visible,
-	}, screen)
-	corner(launcher, 24)
-	stroke(launcher, Color3.new(1, 1, 1), 1, 0.8)
-	new("UIGradient", { Color = ColorSequence.new(C.Accent, C.Accent2), Rotation = 45 }, launcher)
-
-	local function setPanelVisible(visible)
-		if visible then
-			local vp = screen.AbsoluteSize
-			local size = panel.AbsoluteSize
-			local pos = panel.AbsolutePosition
-			panel.Position = UDim2.fromOffset(
-				math.clamp(pos.X, 0, math.max(0, vp.X - size.X)),
-				math.clamp(pos.Y, 0, math.max(0, vp.Y - size.Y))
-			)
-			panelScale.Scale = 0.94
-			panel.Visible = true
-			launcher.Visible = false
-			tween(panelScale, { Scale = 1 }, 0.2, Enum.EasingStyle.Back)
-		else
-			panel.Visible = false
-			launcher.Visible = true
-		end
-	end
-
-	-- ---------- dragging ----------
-	local function makeDraggable(handle, target, onTap)
-		local dragging, moved = false, false
-		local startPoint, startPosition
-		track(handle.InputBegan:Connect(function(input)
-			local kind = input.UserInputType
-			if kind == Enum.UserInputType.Touch or kind == Enum.UserInputType.MouseButton1 then
-				dragging, moved = true, false
-				startPoint = input.Position
-				startPosition = target.Position
-			end
-		end))
-		track(UserInputService.InputChanged:Connect(function(input)
-			if not dragging then return end
-			local kind = input.UserInputType
-			if kind ~= Enum.UserInputType.Touch and kind ~= Enum.UserInputType.MouseMovement then return end
-			local delta = input.Position - startPoint
-			if not moved and delta.Magnitude > 6 then moved = true end
-			if not moved then return end
-			local vp, size = screen.AbsoluteSize, target.AbsoluteSize
-			target.Position = UDim2.fromOffset(
-				math.clamp(startPosition.X.Offset + delta.X, 0, math.max(0, vp.X - size.X)),
-				math.clamp(startPosition.Y.Offset + delta.Y, 0, math.max(0, vp.Y - size.Y))
-			)
-		end))
-		track(UserInputService.InputEnded:Connect(function(input)
-			local kind = input.UserInputType
-			if not dragging then return end
-			if kind == Enum.UserInputType.Touch or kind == Enum.UserInputType.MouseButton1 then
-				dragging = false
-				if not moved and onTap then onTap() end
-			end
-		end))
-	end
-
-	makeDraggable(header, panel)
-	makeDraggable(launcher, launcher, function() setPanelVisible(true) end)
-	track(minimize.Activated:Connect(function() setPanelVisible(false) end))
-
-	-- ---------- content definition ----------
-	local function flingPower()
-		return dependencies.ReadNumber and dependencies.ReadNumber("FlingPower", 180) or 180
-	end
-	local function combatCall(method, ...)
-		local combat = dependencies.Combat
-		if not (combat and combat[method]) then return false, "Combat unavailable" end
-		return combat[method](...)
-	end
-
-	local tabDefs = {
-		{
-			Name = "Main",
-			Items = {
-				{ Header = "FARMING" },
-				{ Toggle = "AutoCoins", Label = "Auto Farm Coins" },
-				{ Toggle = "AutoGrabGun", Label = "Auto Grab Gun" },
-				{ Header = "SURVIVAL" },
-				{ Toggle = "AutoEvade", Label = "Auto Evade Murderer" },
-				{ Toggle = "AntiFling", Label = "Anti Fling" },
-				{ Toggle = "Godmode", Label = "Godmode" },
-				{ Toggle = "Invisibility", Label = "Invisibility" },
-			},
-		},
-		{
-			Name = "Combat",
-			Items = {
-				{ Header = "AUTOMATION" },
-				{ Toggle = "KillAura", Label = "Kill Aura" },
-				{ Toggle = "AutoKillAll", Label = "Auto Kill All" },
-				{ Toggle = "AutoKillSheriff", Label = "Auto Kill Sheriff" },
-				{ Toggle = "AutoShoot", Label = "Auto Shoot" },
-				{ Toggle = "Triggerbot", Label = "Triggerbot" },
-				{ Header = "AIM" },
-				{ Toggle = "KnifeSilentAim", Label = "Knife Silent Aim" },
-				{ Toggle = "GunSilentAim", Label = "Gun Silent Aim" },
-				{ Toggle = "HitboxExpand", Label = "Hitbox Expand" },
-				{ Header = "ACTIONS" },
-				{ Action = "Fling Murderer", Color = C.Danger, Run = function() return combatCall("FlingMurderer", flingPower()) end },
-				{ Action = "Fling Sheriff", Color = C.Danger, Run = function() return combatCall("FlingSheriff", flingPower()) end },
-				{ Action = "Fling All", Color = C.Danger, Run = function() return combatCall("FlingAll", flingPower()) end },
-				{ Action = "Grab Gun", Color = C.Warn, Run = function() return combatCall("GrabGun") end },
-			},
-		},
-		{
-			Name = "Visual",
-			Items = {
-				{ Header = "ESP" },
-				{ Toggle = "EspOn", Label = "Player ESP" },
-				{ Toggle = "EspCoins", Label = "Coins" },
-				{ Toggle = "EspTraps", Label = "Traps" },
-				{ Toggle = "EspTracers", Label = "Tracers" },
-				{ Header = "WORLD" },
-				{ Toggle = "Fullbright", Label = "Fullbright" },
-				{ Toggle = "LowGraphics", Label = "Low Graphics" },
-			},
-		},
-		{
-			Name = "Move",
-			Items = {
-				{ Header = "MOVEMENT" },
-				{ Toggle = "Fly", Label = "Fly" },
-				{ Toggle = "Noclip", Label = "Noclip" },
-				{ Toggle = "SpeedOn", Label = "Speed" },
-				{ Toggle = "JumpOn", Label = "Jump Power" },
-				{ Toggle = "InfJump", Label = "Infinite Jump" },
-				{ Toggle = "ClickTp", Label = "Click Teleport" },
-			},
-		},
-	}
-
-	-- ---------- segmented tab bar ----------
-	local count = #tabDefs
-	local segment = new("Frame", {
-		Name = "Tabs",
-		Position = UDim2.fromOffset(12, HEADER_H + 8),
-		Size = UDim2.new(1, -24, 0, 32),
-		BackgroundColor3 = C.Row,
-		BorderSizePixel = 0,
-	}, panel)
-	corner(segment, 10)
-	stroke(segment, C.Stroke, 1, 0.55)
-
-	local indicator = new("Frame", {
-		Size = UDim2.new(1 / count, -6, 1, -6),
-		Position = UDim2.new(0, 3, 0, 3),
-		BackgroundColor3 = C.Accent,
-		BorderSizePixel = 0,
-		ZIndex = 1,
-	}, segment)
-	corner(indicator, 8)
-	new("UIGradient", { Color = ColorSequence.new(C.Accent, C.Accent2), Rotation = 0 }, indicator)
-
-	local content = new("Frame", {
-		Name = "Content",
-		Position = UDim2.fromOffset(0, HEADER_H + TABS_H + 8),
-		Size = UDim2.new(1, 0, 1, -(HEADER_H + TABS_H + 8 + FOOTER_H)),
-		BackgroundTransparency = 1,
-		ClipsDescendants = true,
-	}, panel)
-
-	local pages, tabButtons = {}, {}
-
-	local function selectTab(index)
-		for i, page in ipairs(pages) do
-			page.Visible = (i == index)
-			tween(tabButtons[i], { TextColor3 = (i == index) and Color3.new(1, 1, 1) or C.Sub }, 0.14)
-		end
-		tween(indicator, { Position = UDim2.new((index - 1) / count, 3, 0, 3) }, 0.2, Enum.EasingStyle.Quint)
-	end
-
-	local function readToggle(name)
-		local option = options[name]
-		return option ~= nil and option.Value == true
-	end
-
-	local function buildHeaderRow(page, item, order)
-		local holder = new("Frame", {
-			Size = UDim2.new(1, 0, 0, 24), BackgroundTransparency = 1, LayoutOrder = order,
-		}, page)
-		text(holder, {
-			Position = UDim2.fromOffset(4, 8), Size = UDim2.new(1, -8, 0, 14), Text = item.Header,
-			TextSize = 10, Font = Enum.Font.GothamBold, TextColor3 = C.Muted, TextXAlignment = Enum.TextXAlignment.Left,
-		})
-	end
-
-	local function buildToggleRow(page, item, order)
-		local option = options[item.Toggle]
-		local row = new("TextButton", {
-			Size = UDim2.new(1, 0, 0, 42), BackgroundColor3 = C.Row, AutoButtonColor = false, Text = "",
-			BorderSizePixel = 0, LayoutOrder = order,
-		}, page)
-		corner(row, 10)
-		local rowStroke = stroke(row, C.Stroke, 1, 0.6)
-
-		local name = text(row, {
-			Position = UDim2.fromOffset(14, 0), Size = UDim2.new(1, -78, 1, 0), Text = item.Label,
-			TextSize = 13, Font = Enum.Font.GothamMedium,
-			TextColor3 = option and C.Text or C.Muted, TextXAlignment = Enum.TextXAlignment.Left,
-		})
-
-		local track_ = new("Frame", {
-			AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0),
-			Size = UDim2.fromOffset(40, 22), BackgroundColor3 = C.Off, BorderSizePixel = 0,
-		}, row)
-		corner(track_, 11)
-		local knob = new("Frame", {
-			AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 3, 0.5, 0),
-			Size = UDim2.fromOffset(16, 16), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
-		}, track_)
-		corner(knob, 8)
-
-		local shown = nil
-		local hovering = false
-		local function paint(state)
-			if shown == state then return end
-			shown = state
-			tween(track_, { BackgroundColor3 = state and C.On or C.Off })
-			tween(knob, { Position = state and UDim2.new(1, -19, 0.5, 0) or UDim2.new(0, 3, 0.5, 0) }, 0.18, Enum.EasingStyle.Back)
-			tween(row, { BackgroundColor3 = state and C.RowOn or (hovering and C.RowHover or C.Row) })
-			tween(rowStroke, { Color = state and C.Accent or C.Stroke, Transparency = state and 0.55 or 0.6 })
-			tween(name, { TextColor3 = state and C.Text or (option and C.Text or C.Muted) })
-		end
-
-		track(row.MouseEnter:Connect(function()
-			hovering = true
-			if not shown then tween(row, { BackgroundColor3 = C.RowHover }, 0.1) end
-		end))
-		track(row.MouseLeave:Connect(function()
-			hovering = false
-			if not shown then tween(row, { BackgroundColor3 = C.Row }, 0.1) end
-		end))
-
-		track(row.Activated:Connect(function()
-			local current = options[item.Toggle]
-			if not (current and current.SetValue) then
-				notify(item.Label .. " is unavailable")
-				return
-			end
-			local target = not readToggle(item.Toggle)
-			local ok = pcall(function() current:SetValue(target) end)
-			if ok then paint(target) end
-		end))
-
-		table.insert(syncers, function()
-			local state = readToggle(item.Toggle)
-			paint(state)
-			return state
-		end)
-	end
-
-	local function buildActionRow(page, item, order)
-		local tint = item.Color or C.Accent
-		local button = new("TextButton", {
-			Size = UDim2.new(1, 0, 0, 40), BackgroundColor3 = C.Row, AutoButtonColor = false, Text = item.Action,
-			TextSize = 13, Font = Enum.Font.GothamBold, TextColor3 = tint, BorderSizePixel = 0, LayoutOrder = order,
-		}, page)
-		corner(button, 10)
-		stroke(button, tint, 1, 0.55)
-		track(button.MouseEnter:Connect(function() tween(button, { BackgroundColor3 = C.RowHover }, 0.1) end))
-		track(button.MouseLeave:Connect(function() tween(button, { BackgroundColor3 = C.Row }, 0.1) end))
-		local busy = false
-		track(button.Activated:Connect(function()
-			if busy then return end
-			busy = true
-			button.Text = item.Action .. "  ·  …"
-			tween(button, { BackgroundColor3 = tint, TextColor3 = Color3.new(1, 1, 1) }, 0.08)
-			task.spawn(function()
-				local ok, result, reason = pcall(item.Run)
-				if not ok then
-					notify(item.Action .. ": " .. tostring(result))
-				elseif result == false then
-					notify(item.Action .. ": " .. tostring(reason or "failed"))
-				end
-				button.Text = item.Action
-				tween(button, { BackgroundColor3 = C.Row, TextColor3 = tint }, 0.2)
-				busy = false
-			end)
-		end))
-	end
-
-	for index, definition in ipairs(tabDefs) do
-		local tabButton = new("TextButton", {
-			Size = UDim2.new(1 / count, 0, 1, 0), Position = UDim2.new((index - 1) / count, 0, 0, 0),
-			BackgroundTransparency = 1, AutoButtonColor = false, Text = definition.Name, TextSize = 12,
-			Font = Enum.Font.GothamBold, TextColor3 = C.Sub, BorderSizePixel = 0, ZIndex = 2,
-		}, segment)
-		tabButtons[index] = tabButton
-
-		local page = new("ScrollingFrame", {
-			Name = definition.Name,
-			Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
-			ScrollBarThickness = 3, ScrollBarImageColor3 = C.Accent, CanvasSize = UDim2.new(0, 0, 0, 0),
-			AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
-			Visible = false,
-		}, content)
-		new("UIPadding", {
-			PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 14),
-			PaddingTop = UDim.new(0, 0), PaddingBottom = UDim.new(0, 10),
-		}, page)
-		new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, page)
-		pages[index] = page
-
-		for order, item in ipairs(definition.Items) do
-			if item.Header then
-				buildHeaderRow(page, item, order)
-			elseif item.Toggle then
-				buildToggleRow(page, item, order)
-			else
-				buildActionRow(page, item, order)
-			end
-		end
-
-		track(tabButton.Activated:Connect(function() selectTab(index) end))
-	end
-
-	-- ---------- footer ----------
-	new("Frame", {
-		AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, -FOOTER_H), Size = UDim2.new(1, 0, 0, 1),
-		BackgroundColor3 = C.Stroke, BackgroundTransparency = 0.45, BorderSizePixel = 0,
-	}, panel)
-
-	local footer = new("Frame", {
-		Name = "Footer", AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 1, 0),
-		Size = UDim2.new(1, 0, 0, FOOTER_H), BackgroundColor3 = C.Panel, BorderSizePixel = 0,
-	}, panel)
-	new("UIPadding", {
-		PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12),
-		PaddingTop = UDim.new(0, 11), PaddingBottom = UDim.new(0, 11),
-	}, footer)
-	new("UIListLayout", {
-		FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder,
-	}, footer)
-
-	local function footerButton(label, color, filled, order, callback)
-		local button = new("TextButton", {
-			Size = UDim2.new(0.5, -4, 1, 0), BackgroundColor3 = filled and color or C.Row, AutoButtonColor = false,
-			Text = label, TextSize = 13, Font = Enum.Font.GothamBold,
-			TextColor3 = filled and Color3.new(1, 1, 1) or color, BorderSizePixel = 0, LayoutOrder = order,
-		}, footer)
-		corner(button, 10)
-		if filled then
-			new("UIGradient", { Color = ColorSequence.new(C.Accent, C.Accent2), Rotation = 0 }, button)
-		else
-			stroke(button, color, 1, 0.5)
-		end
-		track(button.Activated:Connect(function()
-			tween(button, { BackgroundTransparency = 0.45 }, 0.07)
-			task.delay(0.12, function() tween(button, { BackgroundTransparency = 0 }, 0.15) end)
-			pcall(callback)
-		end))
-		return button
-	end
-
-	footerButton("PANIC", C.Danger, false, 1, function()
-		if dependencies.Panic then dependencies.Panic() end
-		for _, sync in ipairs(syncers) do pcall(sync) end
-	end)
-
-	footerButton("Full Menu", C.Accent, true, 2, function()
-		local window = dependencies.Window and dependencies.Window() or nil
-		local library = dependencies.Library
-		window = window or (library and library._waveWindow)
-		local opened = false
-		if window then
-			for _, method in ipairs({ "Minimize", "Show", "Open", "Toggle" }) do
-				if type(window[method]) == "function" then
-					opened = pcall(window[method], window)
-					if opened then break end
-				end
-			end
-		end
-		if not opened and library and type(library.Toggle) == "function" then
-			opened = pcall(library.Toggle, library)
-		end
-		if not opened then notify("Press RightShift to open the full menu") end
-	end)
-
-	selectTab(1)
-	syncShadow()
-
-	-- ---------- state sync ----------
-	task.spawn(function()
-		while alive and screen.Parent do
-			local active = 0
-			for _, sync in ipairs(syncers) do
-				local ok, state = pcall(sync)
-				if ok and state then active = active + 1 end
-			end
-			subtitle.Text = "Murder Mystery 2  ·  " .. (active == 0 and "all features off" or (tostring(active) .. " active"))
-			tween(statusDot, { BackgroundColor3 = active == 0 and C.Off or C.On }, 0.2)
-			task.wait(0.25)
-		end
-	end)
-
-	return {
-		Gui = screen,
-		Show = function() setPanelVisible(true) end,
-		Hide = function() setPanelVisible(false) end,
-		Destroy = function()
-			alive = false
-			for _, connection in ipairs(connections) do
-				pcall(function() connection:Disconnect() end)
-			end
-			pcall(function() screen:Destroy() end)
-		end,
-	}
-end
-
-
-local exports = {
-	Farm = Farm,
-	Appearance = Appearance,
-	Movement = Movement,
-	Options = Options,
-	Lifecycle = Lifecycle,
-	Characters = Characters,
-	Network = Network,
-	Round = Round,
-	Inventory = Inventory,
-	Quest = Quest,
-	Event = Event,
-	Popups = Popups,
-	Spectate = Spectate,
-	Server = Server,
-	Webhook = Webhook,
-	Esp = Esp,
-	Hooks = Hooks,
-	Interface = Interface,
-	Combat = Combat,
-	Config = Config,
-	Application = Application,
-	Settings = Settings,
-	Mobile = Mobile,
-}
-
-local host = getfenv()
-if host.game then return Application.start(host) end
-return exports
+	setContent(ui.FarmStatus, farmText
